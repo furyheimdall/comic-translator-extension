@@ -6,7 +6,7 @@ body:not(.page) main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
 body:not(.page) section { margin-top: 0; }
 html:has(> body:not(.page)) { overflow-x: hidden; }
 header { display: flex; align-items: center; gap: 12px; padding: 20px 20px 12px; }
-.mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--accent); color: #fff; font-size: 23px; }
+.mark { width: 40px; height: 40px; flex: none; }
 h1 { margin: 0; font-size: 20px; letter-spacing: -.7px; }
 header p { margin: 0; color: var(--muted); font-size: 12px; }
 main { padding: 0 14px 16px; }

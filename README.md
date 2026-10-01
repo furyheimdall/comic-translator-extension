@@ -20,7 +20,7 @@ Chrome 웹 스토어에 등록된 확장이 아니므로 **압축해제된 확�
 
 Chrome을 시작할 때 “개발자 모드 확장 프로그램 사용 중지” 안내가 나올 수 있습니다. 닫으면 그대로 계속 쓸 수 있습니다.
 
-ZIP 다시 만들기(개발자용): 이 폴더에서 `zip -X -r dist/comic-translator-extension-$(python3 -c "import json;print(json.load(open('manifest.json'))['version'])").zip manifest.json background.js content.js content.css popup.html popup.js popup.css options.html options.js README.md LICENSE`
+ZIP 다시 만들기(개발자용): 이 폴더에서 `zip -X -r dist/comic-translator-extension-$(python3 -c "import json;print(json.load(open('manifest.json'))['version'])").zip manifest.json background.js content.js content.css popup.html popup.js popup.css options.html options.js icons README.md LICENSE`
 
 ## 서버 연결 (페어링)
 
@@ -85,4 +85,13 @@ ZIP 다시 만들기(개발자용): 이 폴더에서 `zip -X -r dist/comic-trans
 
 ## 파일
 
-`manifest.json`, `background.js`, `content.js`, `content.css`, `popup.html`·`popup.js`(팝업), `options.html`·`options.js`(설정 화면, 스타일은 `popup.css` 공유), `README.md`, `LICENSE`(Apache-2.0)입니다. 별도 아이콘은 포함하지 않습니다.
+`manifest.json`, `background.js`, `content.js`, `content.css`, `popup.html`·`popup.js`(팝업), `options.html`·`options.js`(설정 화면, 스타일은 `popup.css` 공유), `icons/`, `README.md`, `LICENSE`(Apache-2.0)가 패키지에 들어갑니다. `PRIVACY.md`(개인정보 처리방침)와 `store/`(웹 스토어 등록 자료)는 저장소에만 있습니다.
+
+## Chrome 웹 스토어 등록 자료
+
+- [`store/LISTING.md`](store/LISTING.md): 스토어 설명(한국어·영어), 단일 목적, 권한별 사유, 데이터 사용 공개 항목, 심사 메모
+- [`PRIVACY.md`](PRIVACY.md): 개인정보 처리방침(한국어·영어). 대시보드의 개인정보 처리방침 URL로 이 파일의 GitHub 주소를 씁니다.
+- [`store/images/`](store/images): 스토어 아이콘(128×128), 작은 프로모션 타일(440×280), 스크린샷 4장(1280×800). 스크린샷의 원고는 comic-translator의 합성 원고 생성기로 만든 것입니다.
+- 아이콘·프로모션 타일 다시 만들기: `python3 store/make_assets.py`(Pillow, Noto Sans CJK 필요)
+
+개발자 계정 등록(1회 5달러, 2단계 인증)과 제출은 계정 소유자가 직접 해야 합니다.

@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "만화 번역 · 내 서버",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "내 comic-translator 서버로 일본어 만화를 한국어로 번역합니다.",
   "minimum_chrome_version": "120",
-  "permissions": ["storage", "tabs", "scripting", "declarativeNetRequest", "alarms", "contextMenus"],
+  "permissions": ["storage", "tabs", "declarativeNetRequest", "alarms", "contextMenus"],
   "host_permissions": ["<all_urls>"],
   "background": {"service_worker": "background.js", "type": "module"},
-  "action": {"default_popup": "popup.html", "default_title": "만화 번역"},
+  "icons": {"16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png"},
+  "action": {"default_popup": "popup.html", "default_title": "만화 번역", "default_icon": {"16": "icons/icon16.png", "32": "icons/icon32.png"}},
   "options_ui": {"page": "options.html", "open_in_tab": true},
   "content_scripts": [{
     "matches": ["<all_urls>"],
