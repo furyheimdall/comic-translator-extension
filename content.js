@@ -1,7 +1,7 @@
 (() => {
   if (globalThis.__comicTranslatorLoaded) return;
   globalThis.__comicTranslatorLoaded = true;
-  let enabled = false, originals = false, minSize = 300, scanTimer, frameScheduled = false;
+  let enabled = false, manual = false, originals = false, minSize = 300, scanTimer, frameScheduled = false;
   const records = new Map(), assets = new Map(), roots = new Map();
   const intersection = new IntersectionObserver(entries => {
     for (const entry of entries) {
@@ -113,8 +113,12 @@
   }
   async function consider(record) {
     const image = record.image;
-    if (!enabled || !record.near || !image.complete || !image.naturalWidth || record.swapped || record.canvas) return;
-    if (Math.min(image.naturalWidth, image.naturalHeight) < minSize || image.naturalWidth * image.naturalHeight < 250000) return;
+    if (!enabled || !image.complete || !image.naturalWidth || record.swapped || record.canvas) return;
+    // Right-clicked images skip the automatic proximity and size rules; manual mode translates nothing else.
+    if (!record.forced) {
+      if (manual || !record.near) return;
+      if (Math.min(image.naturalWidth, image.naturalHeight) < minSize || image.naturalWidth * image.naturalHeight < 250000) return;
+    }
     const url = localUrl(image);
     if (!url || owned(url) || !/^(https?:|data:|blob:)/.test(url)) return;
     let asset = assets.get(url);
@@ -125,9 +129,10 @@
     }
     if (asset.objectUrl) { apply(record, asset); return; }
     setBadge(record, asset.status === 'failed' ? '실패' : asset.status === 'processing' ? '번역 중' : '번역 대기', asset.error);
-    if (asset.requested) return;
+    if (asset.requested && !record.retry) return;
     asset.requested = true;
-    try { await message({type: 'CANDIDATE', url}); }
+    const retry = !!record.retry; record.retry = false;
+    try { await message({type: 'CANDIDATE', url, retry}); }
     catch (error) { asset.requested = false; setBadge(record, '실패', error.message); }
   }
   function changed(record) {
@@ -186,7 +191,14 @@
   }
   function start(config) {
     minSize = config.minSize || 300; originals = !!config.originals;
-    if (enabled) { for (const record of records.values()) if (!originals && record.asset?.objectUrl) apply(record, record.asset); return; }
+    const wasManual = manual; manual = !!config.manual;
+    if (enabled) {
+      for (const record of records.values()) {
+        if (!originals && record.asset?.objectUrl) apply(record, record.asset);
+        else if (wasManual && !manual) consider(record);
+      }
+      return;
+    }
     enabled = true;
     scan(document);
     scanTimer = setInterval(() => {
@@ -201,7 +213,7 @@
     }, 3000);
   }
   function stop() {
-    enabled = false; clearInterval(scanTimer);
+    enabled = false; manual = false; clearInterval(scanTimer);
     for (const observer of roots.values()) observer.disconnect(); roots.clear(); intersection.disconnect(); resize.disconnect();
     for (const record of records.values()) {
       restore(record); removeBadge(record);
@@ -250,6 +262,16 @@
       case 'ENABLE': start(payload); break;
       case 'DISABLE': stop(); break;
       case 'GET_BYTES': return imageBytes(payload.url);
+      case 'TRANSLATE_IMAGE': {
+        scanNodes(document);
+        const targets = [...records.values()].filter(record => localUrl(record.image) === payload.url || record.image.src === payload.url);
+        for (const record of targets) {
+          record.forced = true;
+          if (record.asset?.status === 'failed') { record.asset.status = 'queued'; record.asset.error = ''; record.retry = true; }
+          consider(record);
+        }
+        return {found: targets.length};
+      }
       case 'SET_ORIGINALS':
         originals = payload.originals;
         for (const record of records.values()) if (originals) restore(record); else if (record.asset?.objectUrl) apply(record, record.asset);

@@ -1,4 +1,4 @@
-const DEFAULTS = {serverUrl: '', token: '', deviceName: '', notice: '', providerId: '', model: '', reasoning: 'default', instructions: '', autoSites: [], minSize: 300};
+const DEFAULTS = {serverUrl: '', token: '', deviceName: '', notice: '', providerId: '', providerLabel: '', model: '', reasoning: 'default', instructions: '', autoSites: [], minSize: 300};
 const PAIR_POLL_MS = 2000;
 let pairing = null; // {serverUrl, id, secret, code, expiresAt, status, error}
 let settings, tabs = {}, sessions = {}, saveChain = Promise.resolve(), retryChain = Promise.resolve();
@@ -145,7 +145,7 @@ async function badge(tabId) {
 function publicState(state) {
   const counts = {queued: 0, processing: 0, done: 0, failed: 0};
   if (state) for (const page of Object.values(state.pages)) counts[page.status === 'uploading' ? 'processing' : page.status]++;
-  return {enabled: !!state, originals: !!state?.originals, counts, message: state?.message || ''};
+  return {enabled: !!state, manual: !!state?.manual, originals: !!state?.originals, counts, message: state?.message || ''};
 }
 function base64(bytes) {
   const array = new Uint8Array(bytes); let text = '';
@@ -312,14 +312,23 @@ async function disable(tabId) {
   const pending = Object.values(state.pages).filter(p => p.idx != null && p.status !== 'done' && p.status !== 'failed');
   for (const sid of new Set(pending.map(p => p.sid))) await api(`/api/live/${encodeURIComponent(sid)}/discard`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pages: pending.filter(p => p.sid === sid).map(p => p.idx)})}, state.config).catch(() => {});
 }
-async function enable(tabId) {
-  if (tabs[tabId]) return;
+// `manual`: only images the user picks from the context menu are translated.
+async function enable(tabId, manual = false) {
+  const existing = tabs[tabId];
+  if (existing) {
+    if (existing.manual && !manual) {
+      existing.manual = false; existing.message = '가까운 만화 이미지를 찾는 중입니다.';
+      await save();
+      await notify(tabId, {type: 'ENABLE', minSize: settings.minSize, manual: false, originals: existing.originals});
+    }
+    return;
+  }
   const tab = await chrome.tabs.get(tabId);
   if (!/^https?:\/\//.test(tab.url || '')) throw new Error('일반 웹 페이지에서만 번역을 켤 수 있습니다.');
-  if (!settings.serverUrl || !settings.providerId) throw new Error('서버 연결 테스트 후 번역 제공자를 선택하세요.');
-  tabs[tabId] = {url: tab.url, title: tab.title || '만화 번역', configKey: configKey(), config: {...settings}, pages: {}, originals: false, message: '가까운 만화 이미지를 찾는 중입니다.'};
+  if (!settings.serverUrl || !settings.providerId) throw new Error('먼저 설정에서 서버와 페어링하고 번역 제공자를 고르세요.');
+  tabs[tabId] = {url: tab.url, title: tab.title || '만화 번역', configKey: configKey(), config: {...settings}, pages: {}, originals: false, manual, message: manual ? '선택한 이미지를 번역합니다.' : '가까운 만화 이미지를 찾는 중입니다.'};
   await save();
-  await notify(tabId, {type: 'ENABLE', minSize: settings.minSize});
+  await notify(tabId, {type: 'ENABLE', minSize: settings.minSize, manual});
 }
 async function handle(message, sender) {
   await ready;
@@ -357,6 +366,8 @@ async function handle(message, sender) {
       const state = tabs[tabId]; if (!state || !sender.tab) return {accepted: false};
       let page = state.pages[message.url];
       if (!page) page = state.pages[message.url] = {url: message.url, frames: [], status: 'queued', idx: null, sid: null};
+      // Picking a failed image again from the context menu retries it.
+      if (message.retry && page.status === 'failed') Object.assign(page, {status: 'queued', idx: null, sid: null, error: null});
       if (!page.frames.includes(sender.frameId)) page.frames.push(sender.frameId);
       await save();
       if (page.status === 'done') {
@@ -389,3 +400,19 @@ chrome.tabs.onUpdated.addListener((id, change) => {
   });
 });
 chrome.alarms.onAlarm.addListener(() => { ready.then(() => Object.keys(tabs).forEach(id => resume(Number(id)))); });
+// ---------------------------------------------------------------- context menu
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: 'translate-image', title: '이 이미지 번역', contexts: ['image'],
+    documentUrlPatterns: ['http://*/*', 'https://*/*'],
+  });
+});
+function onMenuClick(info, tab) {
+  if (info.menuItemId !== 'translate-image' || !tab?.id || !info.srcUrl) return Promise.resolve();
+  return ready.then(async () => {
+    if (!settings.serverUrl || !settings.providerId) { chrome.runtime.openOptionsPage(); return; }
+    await enable(tab.id, true);
+    await notify(tab.id, {type: 'TRANSLATE_IMAGE', url: info.srcUrl}, info.frameId);
+  }).catch(error => { if (tabs[tab.id]) tabs[tab.id].message = errorText(error); });
+}
+chrome.contextMenus.onClicked.addListener(onMenuClick);

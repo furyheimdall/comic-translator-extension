@@ -36,4 +36,26 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .pair-code { margin: 8px 0 2px; font: 700 26px/1.2 ui-monospace, monospace; letter-spacing: .12em; text-align: center; }
 .status.ok { color: var(--accent); }
 footer { padding: 12px 6px 0; font-size: 11px; }
+.summary { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
+.summary dt { color: var(--muted); }
+.summary dd { margin: 0; overflow-wrap: anywhere; }
+.hint b { color: var(--text); }
+/* Full-page settings (options.html) */
+body.page { width: auto; max-width: 1040px; margin: 0 auto; font-size: 15px; }
+body.page header { padding: 28px 24px 8px; }
+body.page h1 { font-size: 24px; }
+body.page main.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; padding: 0 24px 16px; align-items: start; }
+body.page section { margin: 0; padding: 22px; }
+body.page h2 { font-size: 17px; }
+body.page .hint { font-size: 13px; }
+body.page .status { font-size: 14px; }
+body.page footer { padding: 0 30px 30px; font-size: 13px; }
+body.page #sites-title { margin-bottom: 8px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.buttons { display: flex; gap: 8px; }
+.buttons button { flex: 1; }
+.sites { list-style: none; margin: 0; padding: 0; }
+.sites li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.sites li:first-child { border-top: 0; }
+button.small { width: auto; margin: 0; padding: 4px 12px; font-size: 12px; }
 @media (prefers-color-scheme: dark) { :root { --bg: #141b2a; --panel: #202a3c; --text: #edf1fc; --muted: #a4b0ca; --line: #3d4860; --accent: #92acff; --error: #ff9ea7; } button:not(.secondary) { color: #15213a; } }
