@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>만화 번역 설정</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <header><span class="mark" aria-hidden="true">文</span><div><h1>만화 번역</h1><p>일본어 → 한국어 · 내 서버</p></div></header>
+  <main>
+    <section class="tab-panel" aria-labelledby="tab-title">
+      <div class="row"><h2 id="tab-title">현재 탭</h2><label class="toggle"><span>이 탭 번역</span><input type="checkbox" id="enabled"></label></div>
+      <p id="site" class="muted">탭 확인 중…</p>
+      <label class="check"><input type="checkbox" id="autoSite"> 이 사이트에서 항상 켜기</label>
+      <div class="counts" aria-live="polite"><div><b id="queued">0</b><span>대기</span></div><div><b id="processing">0</b><span>번역 중</span></div><div><b id="done">0</b><span>완료</span></div><div><b id="failed">0</b><span>실패</span></div></div>
+      <p id="sessionMessage" class="status" aria-live="polite">번역이 꺼져 있습니다.</p>
+      <button type="button" id="originals" class="secondary" disabled>원본 보기</button>
+    </section>
+    <section aria-labelledby="settings-title">
+      <h2 id="settings-title">서버 연결</h2>
+      <label for="serverUrl">서버 주소</label>
+      <input id="serverUrl" type="url" placeholder="http://192.168.0.10:18710" spellcheck="false" autocomplete="off">
+      <div class="pair" id="pairBox">
+        <p id="pairState" class="status">페어링 상태 확인 중…</p>
+        <p id="pairCode" class="pair-code" hidden></p>
+        <label for="deviceName">기기 이름</label>
+        <input id="deviceName" type="text" maxlength="100" autocomplete="off">
+        <button type="button" id="pair">페어링 요청</button>
+        <button type="button" id="pairCancel" class="secondary" hidden>요청 취소</button>
+        <button type="button" id="unpair" class="secondary" hidden>이 브라우저 연결 해제</button>
+        <p class="hint">페어링을 요청하면 6자리 코드가 표시됩니다. 서버 웹 UI의 <b>확장 프로그램</b> 화면에서 같은 코드의 요청을 승인하세요. 서버는 언제든 이 연결을 해제할 수 있습니다.</p>
+      </div>
+      <button type="button" id="test" class="secondary">연결 테스트</button>
+      <p id="connectionMessage" class="status" role="status"></p>
+      <label for="providerId">번역 제공자</label>
+      <select id="providerId"><option value="">먼저 연결 테스트를 해 주세요</option></select>
+      <label for="model">모델</label>
+      <select id="model" disabled><option value="">제공자를 먼저 선택하세요</option></select>
+      <label for="reasoning">추론 수준</label>
+      <select id="reasoning" disabled><option value="default">제공자 기본값</option></select>
+      <p id="llmMessage" class="hint">서버가 이 제공자에 제공하는 모델과 추론 수준만 고를 수 있습니다. 추론을 낮출수록 빠릅니다.</p>
+      <label for="instructions">작품 용어집·메모</label>
+      <textarea id="instructions" rows="4" placeholder="인물 이름, 호칭, 문체 등 번역에 참고할 내용을 적어 주세요."></textarea>
+      <label for="minSize">이미지 짧은 변 최소 크기 (픽셀)</label>
+      <input id="minSize" type="number" min="1" step="50" value="300">
+      <p class="hint">면적 250,000픽셀 이상인 이미지만 번역합니다.</p>
+      <button type="button" id="save">설정 저장</button>
+      <p id="feedback" class="status" role="alert"></p>
+    </section>
+    <footer>이미지는 내 서버로 전송됩니다. 번역 시간은 대부분 LLM 응답 시간이라 추론 수준이 낮을수록 빠릅니다.</footer>
+  </main>
+</body>
+</html>
