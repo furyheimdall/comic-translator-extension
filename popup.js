@@ -6,6 +6,7 @@ async function send(payload) {
   return result;
 }
 function show(id, text, error = false) { $(id).textContent = text; $(id).classList.toggle('error', error); }
+$('version').textContent = `v${chrome.runtime.getManifest().version}`;
 function ready() { return !!(settings.serverUrl && settings.providerId); }
 function renderSummary(status) {
   const server = settings.serverUrl ? new URL(settings.serverUrl).host : '설정 안 됨';
