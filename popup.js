@@ -51,14 +51,26 @@ $('autoSite').addEventListener('change', () => action(async () => {
   settings = (await send({type: 'SAVE_SETTINGS', settings: {...settings, autoSites: [...autoSites]}})).settings;
   show('feedback', $('autoSite').checked ? '이 사이트의 새 페이지에서도 자동으로 번역합니다.' : '이 사이트 자동 번역을 껐습니다.');
 }));
+$('autoAll').addEventListener('change', () => action(async () => {
+  const autoAll = $('autoAll').checked;
+  if (autoAll && !ready()) { $('autoAll').checked = false; chrome.runtime.openOptionsPage(); throw new Error('먼저 설정을 마치세요.'); }
+  settings = (await send({type: 'SAVE_SETTINGS', settings: {...settings, autoAll}})).settings;
+  $('autoSite').disabled = autoAll || !hostname;
+  $('autoSite').checked = autoAll || settings.autoSites.includes(hostname);
+  // Turning it on starts (or widens a right-click-only) current tab right away.
+  if (autoAll && hostname && (!state.enabled || state.manual)) render(await send({type: 'SET_ENABLED', tabId: currentTab.id, enabled: true}));
+  show('feedback', autoAll ? '모든 사이트에서 탭 번역을 자동으로 켭니다.' : '모든 사이트 자동 번역을 껐습니다. 이미 켜진 탭은 그대로입니다.');
+}));
 (async () => {
   settings = (await send({type: 'GET_SETTINGS'})).settings;
   renderSummary(await send({type: 'PAIR_STATUS'}));
   [currentTab] = await chrome.tabs.query({active: true, currentWindow: true});
   const eligible = currentTab && /^https?:\/\//.test(currentTab.url || '');
-  $('enabled').disabled = !eligible; $('autoSite').disabled = !eligible;
+  $('enabled').disabled = !eligible;
+  $('autoAll').checked = !!settings.autoAll;
+  $('autoSite').disabled = !eligible || !!settings.autoAll;
   if (eligible) {
-    hostname = new URL(currentTab.url).hostname; $('site').textContent = hostname; $('autoSite').checked = settings.autoSites.includes(hostname);
+    hostname = new URL(currentTab.url).hostname; $('site').textContent = hostname; $('autoSite').checked = settings.autoAll || settings.autoSites.includes(hostname);
     await refresh();
   } else show('site', '번역할 일반 웹 페이지에서 확장 프로그램을 열어 주세요.');
   setInterval(() => refresh().catch(error => show('feedback', error.message, true)), 1000);

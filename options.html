@@ -45,9 +45,12 @@
       <p id="feedback" class="status" role="alert"></p>
     </section>
     <section aria-labelledby="sites-title">
-      <h2 id="sites-title">3. 항상 번역할 사이트</h2>
+      <h2 id="sites-title">3. 자동 번역</h2>
+      <label class="check big"><input type="checkbox" id="autoAll"> 모든 사이트에서 항상 켜기</label>
+      <p class="hint">켜 두면 일반 웹 페이지를 열 때마다 탭 번역이 자동으로 켜져, 페이지의 만화 이미지(위 최소 크기 이상)를 모두 번역합니다. 주소만 바뀌는 사이트(SPA)에서 다음 화로 넘어가도 계속 켜져 있습니다. 끄려면 팝업에서 그 탭의 번역을 끄세요.</p>
+      <h3>항상 번역할 사이트</h3>
       <ul id="sites" class="sites"></ul>
-      <p class="hint">팝업의 <b>이 사이트에서 항상 켜기</b>로 추가합니다. 등록한 호스트의 새 페이지에서 자동으로 번역을 켭니다.</p>
+      <p class="hint">팝업의 <b>이 사이트에서 항상 켜기</b>로 추가합니다. ‘모든 사이트에서 항상 켜기’가 꺼져 있을 때 이 목록의 사이트만 자동으로 켭니다.</p>
     </section>
   </main>
   <footer>이미지는 내 서버로 전송됩니다. 번역 시간은 대부분 LLM 응답 시간이라 추론 수준이 낮을수록 빠릅니다.</footer>

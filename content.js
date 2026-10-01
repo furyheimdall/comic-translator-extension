@@ -17,21 +17,38 @@
   }
   function localUrl(image) { return image.currentSrc || image.src; }
   function owned(url) { return [...assets.values()].some(asset => asset.objectUrl === url); }
+  const BADGE_STATE = {'번역 중': 'processing', '번역 대기': 'queued', '실패': 'failed'};
   function setBadge(record, text, error = '') {
     if (!enabled || !record.image.isConnected) return;
     if (!record.badge) {
       record.badge = document.createElement('div');
       record.badge.className = 'comic-translator-badge';
       record.badge.setAttribute('data-comic-translator-ui', '');
+      const spinner = document.createElement('span'); spinner.className = 'comic-translator-spinner';
+      const label = document.createElement('span');
+      record.badge.append(spinner, label);
       document.documentElement.append(record.badge);
     }
-    record.badge.textContent = text;
+    const state = BADGE_STATE[text] || 'queued';
+    record.badge.lastChild.textContent = text;
     record.badge.title = error;
-    record.badge.dataset.failed = text === '실패' ? 'true' : 'false';
+    record.badge.dataset.state = state;
+    record.badge.dataset.failed = state === 'failed' ? 'true' : 'false';
+    // A moving sweep over the image itself while the server works on it.
+    if (state === 'processing' && !record.working) {
+      record.working = document.createElement('div');
+      record.working.className = 'comic-translator-working';
+      record.working.setAttribute('data-comic-translator-ui', '');
+      document.documentElement.append(record.working);
+    } else if (state !== 'processing') { record.working?.remove(); record.working = null; }
     record.image.dataset.comicTranslatorStatus = text;
     positionSoon();
   }
-  function removeBadge(record) { record.badge?.remove(); record.badge = null; delete record.image.dataset.comicTranslatorStatus; }
+  function removeBadge(record) {
+    record.badge?.remove(); record.badge = null;
+    record.working?.remove(); record.working = null;
+    delete record.image.dataset.comicTranslatorStatus;
+  }
   function positionSoon() {
     if (frameScheduled) return;
     frameScheduled = true;
@@ -41,9 +58,14 @@
         const rect = record.image.getBoundingClientRect();
         const visible = enabled && record.image.isConnected && rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
         if (record.badge) {
-          record.badge.style.display = visible ? 'block' : 'none';
+          record.badge.style.setProperty('display', visible ? 'flex' : 'none', 'important');
           record.badge.style.left = `${Math.max(0, rect.left + 6)}px`;
           record.badge.style.top = `${Math.max(0, rect.top + 6)}px`;
+        }
+        if (record.working) {
+          record.working.style.display = visible ? 'block' : 'none';
+          record.working.style.left = `${rect.left}px`; record.working.style.top = `${rect.top}px`;
+          record.working.style.width = `${rect.width}px`; record.working.style.height = `${rect.height}px`;
         }
         if (record.canvas) {
           record.canvas.style.display = visible && !originals ? 'block' : 'none';
@@ -204,7 +226,7 @@
     scanTimer = setInterval(() => {
       scanNodes(document);
       for (const [image, record] of records) if (!image.isConnected) {
-        record.badge?.remove(); record.canvas?.remove(); intersection.unobserve(image); resize.unobserve(image);
+        record.badge?.remove(); record.working?.remove(); record.canvas?.remove(); intersection.unobserve(image); resize.unobserve(image);
         image.removeEventListener('load', record.onLoad); image.removeEventListener('error', record.onError);
         record.asset?.images.delete(record); records.delete(image);
       }

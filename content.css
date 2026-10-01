@@ -2,15 +2,54 @@
   position: fixed !important;
   z-index: 2147483647 !important;
   pointer-events: none !important;
-  padding: 4px 7px !important;
-  border-radius: 6px !important;
-  background: rgba(27, 42, 76, .88) !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 5px 9px !important;
+  border-radius: 999px !important;
+  background: rgba(27, 42, 76, .9) !important;
   color: #fff !important;
-  font: 600 11px/1.4 system-ui, sans-serif !important;
-  box-shadow: 0 1px 5px #0003 !important;
-  max-width: 160px !important;
+  font: 600 12px/1.4 system-ui, sans-serif !important;
+  box-shadow: 0 2px 8px #0004 !important;
+  max-width: 180px !important;
 }
 .comic-translator-badge[data-failed="true"] { background: rgba(150, 35, 45, .92) !important; }
+.comic-translator-spinner {
+  display: none !important;
+  width: 12px !important;
+  height: 12px !important;
+  flex: none !important;
+  border-radius: 50% !important;
+  border: 2px solid rgba(255, 255, 255, .3) !important;
+  border-top-color: #fff !important;
+}
+.comic-translator-badge[data-state="processing"] { background: rgba(52, 88, 206, .95) !important; }
+.comic-translator-badge[data-state="processing"] .comic-translator-spinner { display: block !important; animation: comic-translator-spin .8s linear infinite !important; }
+.comic-translator-badge[data-state="queued"] { animation: comic-translator-breathe 1.6s ease-in-out infinite !important; }
+/* Overlay on the image being translated: light sweep plus a pulsing frame. */
+.comic-translator-working {
+  position: fixed !important;
+  z-index: 2147483646 !important;
+  pointer-events: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: 4px !important;
+  overflow: hidden !important;
+  background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, .38) 50%, transparent 65%) !important;
+  background-size: 300% 100% !important;
+  animation: comic-translator-sweep 1.8s linear infinite, comic-translator-frame 1.6s ease-in-out infinite !important;
+}
+@keyframes comic-translator-spin { to { transform: rotate(360deg); } }
+@keyframes comic-translator-breathe { 50% { opacity: .55; } }
+@keyframes comic-translator-sweep { from { background-position: 100% 0; } to { background-position: -50% 0; } }
+@keyframes comic-translator-frame {
+  0%, 100% { box-shadow: inset 0 0 0 3px rgba(80, 125, 255, .45), 0 0 0 0 rgba(80, 125, 255, .0); }
+  50% { box-shadow: inset 0 0 0 3px rgba(80, 125, 255, .95), 0 0 18px 2px rgba(80, 125, 255, .45); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .comic-translator-working { animation: none !important; box-shadow: inset 0 0 0 3px rgba(80, 125, 255, .8) !important; background: rgba(80, 125, 255, .08) !important; }
+  .comic-translator-badge[data-state="queued"], .comic-translator-badge[data-state="processing"] .comic-translator-spinner { animation: none !important; }
+}
 .comic-translator-canvas {
   position: fixed !important;
   z-index: 2147483646 !important;

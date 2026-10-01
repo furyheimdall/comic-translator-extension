@@ -1,4 +1,4 @@
-const DEFAULTS = {serverUrl: '', token: '', deviceName: '', notice: '', providerId: '', providerLabel: '', model: '', reasoning: 'default', autoSites: [], minSize: 300};
+const DEFAULTS = {serverUrl: '', token: '', deviceName: '', notice: '', providerId: '', providerLabel: '', model: '', reasoning: 'default', autoAll: false, autoSites: [], minSize: 300};
 const PAIR_POLL_MS = 2000;
 let pairing = null; // {serverUrl, id, secret, code, expiresAt, status, error}
 let settings, tabs = {}, sessions = {}, saveChain = Promise.resolve(), retryChain = Promise.resolve();
@@ -358,7 +358,7 @@ async function handle(message, sender) {
     case 'SET_ORIGINALS': if (tabs[tabId]) { tabs[tabId].originals = message.originals; await save(); await notify(tabId, {type: 'SET_ORIGINALS', originals: message.originals}); } return publicState(tabs[tabId]);
     case 'HELLO': {
       if (!sender.tab) throw new Error('탭 정보가 없습니다.');
-      if (!tabs[tabId] && settings.autoSites.includes(new URL(sender.tab.url).hostname)) await enable(tabId);
+      if (!tabs[tabId] && autoFor(sender.tab.url)) await enable(tabId);
       const state = tabs[tabId];
       if (state) resume(tabId);
       return {...publicState(state), minSize: settings.minSize};
@@ -393,11 +393,23 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   return true;
 });
 chrome.tabs.onRemoved.addListener(id => { ready.then(() => disable(id)); });
-chrome.tabs.onUpdated.addListener((id, change) => {
+// Whole-tab translation starts by itself everywhere (autoAll) or on listed hosts.
+function autoFor(url) {
+  try {
+    const parsed = new URL(url);
+    return /^https?:$/.test(parsed.protocol) && (settings.autoAll || settings.autoSites.includes(parsed.hostname));
+  } catch { return false; }
+}
+chrome.tabs.onUpdated.addListener((id, change, tab) => {
   ready.then(async () => {
     const state = tabs[id];
     // A document reload invalidates frame-local object URLs even when its URL is unchanged.
-    if (state && (change.status === 'loading' || (change.url && change.url !== state.url))) await disable(id);
+    if (state && (change.status === 'loading' || (change.url && change.url !== state.url))) {
+      await disable(id);
+      // Single-page apps change the URL without reloading the content script; restart it here.
+      // After a real reload the new document's HELLO finds this state and resumes it.
+      if (autoFor(tab.url)) await enable(id).catch(() => {});
+    }
   });
 });
 chrome.alarms.onAlarm.addListener(() => { ready.then(() => Object.keys(tabs).forEach(id => resume(Number(id)))); });

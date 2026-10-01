@@ -122,16 +122,23 @@ $('unpair').addEventListener('click', () => action(async () => {
   await refreshPairing();
 }));
 $('serverUrl').addEventListener('input', () => { connectedProviders = null; show('connectionMessage', '서버 주소가 변경되었습니다. 연결을 다시 테스트하세요. 다른 서버라면 다시 페어링해야 합니다.'); });
+$('autoAll').addEventListener('change', () => action(async () => {
+  settings = (await send({type: 'SAVE_SETTINGS', settings: {...settings, autoAll: $('autoAll').checked}})).settings;
+  show('feedback', settings.autoAll ? '모든 사이트에서 탭 번역을 자동으로 켭니다. 새로 여는 페이지부터 적용됩니다.' : '모든 사이트 자동 번역을 껐습니다.');
+}));
 (async () => {
   settings = (await send({type: 'GET_SETTINGS'})).settings;
   for (const id of ['serverUrl', 'minSize']) $(id).value = settings[id];
   $('deviceName').value = settings.deviceName || defaultDeviceName();
+  $('autoAll').checked = !!settings.autoAll;
   renderSites();
   await refreshPairing();
   if (settings.serverUrl) await testConnection().catch(() => {});
   setInterval(() => refreshPairing().catch(error => show('feedback', error.message, true)), 1000);
   // Sites added from the popup show up without reloading this page.
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes.autoSites) { settings.autoSites = changes.autoSites.newValue || []; renderSites(); }
+    if (area !== 'local') return;
+    if (changes.autoSites) { settings.autoSites = changes.autoSites.newValue || []; renderSites(); }
+    if (changes.autoAll) { settings.autoAll = !!changes.autoAll.newValue; $('autoAll').checked = settings.autoAll; }
   });
 })().catch(error => show('feedback', error.message, true));

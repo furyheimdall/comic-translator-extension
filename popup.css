@@ -62,4 +62,6 @@ body.page #sites-title { margin-bottom: 8px; }
 .sites li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
 .sites li:first-child { border-top: 0; }
 button.small { width: auto; margin: 0; padding: 4px 12px; font-size: 12px; }
+.check.big { font-size: 15px; font-weight: 600; margin-top: 4px; }
+body.page h3 { margin: 18px 0 8px; font-size: 14px; }
 @media (prefers-color-scheme: dark) { :root { --bg: #141b2a; --panel: #202a3c; --text: #edf1fc; --muted: #a4b0ca; --line: #3d4860; --accent: #92acff; --error: #ff9ea7; } button:not(.secondary) { color: #15213a; } }
