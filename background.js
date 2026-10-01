@@ -1,10 +1,11 @@
-const DEFAULTS = {serverUrl: '', token: '', deviceName: '', notice: '', providerId: '', providerLabel: '', model: '', reasoning: 'default', instructions: '', autoSites: [], minSize: 300};
+const DEFAULTS = {serverUrl: '', token: '', deviceName: '', notice: '', providerId: '', providerLabel: '', model: '', reasoning: 'default', autoSites: [], minSize: 300};
 const PAIR_POLL_MS = 2000;
 let pairing = null; // {serverUrl, id, secret, code, expiresAt, status, error}
 let settings, tabs = {}, sessions = {}, saveChain = Promise.resolve(), retryChain = Promise.resolve();
 const creations = new Map(), uploadChains = new Map(), running = new Set(), polling = new Set(), outputs = new Map();
 const ready = (async () => {
   settings = {...DEFAULTS, ...await chrome.storage.local.get(Object.keys(DEFAULTS))};
+  await chrome.storage.local.remove('instructions'); // glossary setting removed in 1.3.0
   const saved = await chrome.storage.session.get(['translationTabs', 'liveSessions', 'pairing']);
   tabs = saved.translationTabs || {};
   sessions = saved.liveSessions || {};
@@ -24,7 +25,7 @@ function save() {
   return saveChain;
 }
 function errorText(error) { return error?.message || String(error); }
-function llmKey(config) { return [config.serverUrl, config.token, config.providerId, config.model, config.reasoning, config.instructions]; }
+function llmKey(config) { return [config.serverUrl, config.token, config.providerId, config.model, config.reasoning]; }
 function configKey() { return JSON.stringify(llmKey(settings)); }
 function validateServer(value) {
   const url = new URL(value);
@@ -123,7 +124,7 @@ async function ensureSession(state) {
     const work = (async () => {
       const connection = await connect(state.config);
       if (!connection.providers.some(p => p.id === state.config.providerId && p.connected)) throw new Error('연결된 번역 제공자를 선택하세요.');
-      const response = await api('/api/live', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: state.title, provider_id: state.config.providerId, model: state.config.model || undefined, reasoning: state.config.reasoning || 'default', engine: connection.engine, instructions: state.config.instructions})}, state.config);
+      const response = await api('/api/live', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: state.title, provider_id: state.config.providerId, model: state.config.model || undefined, reasoning: state.config.reasoning || 'default', engine: connection.engine})}, state.config);
       const live = await response.json();
       sessions[state.configKey] = live.id;
       await save();

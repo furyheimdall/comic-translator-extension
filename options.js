@@ -10,7 +10,7 @@ function form() {
   const option = $('providerId').selectedOptions[0];
   const reasoning = $('reasoning').selectedOptions[0];
   const providerLabel = $('providerId').value ? `${option?.dataset.name || ''} · ${$('model').selectedOptions[0]?.dataset.model || ''} · 추론 ${reasoning?.textContent || '기본값'}` : '';
-  return {...settings, serverUrl: $('serverUrl').value.trim().replace(/\/$/, ''), providerId: $('providerId').value, providerLabel, model: $('model').value, reasoning: $('reasoning').value || 'default', instructions: $('instructions').value, minSize: Math.max(1, Number($('minSize').value) || 300)};
+  return {...settings, serverUrl: $('serverUrl').value.trim().replace(/\/$/, ''), providerId: $('providerId').value, providerLabel, model: $('model').value, reasoning: $('reasoning').value || 'default', minSize: Math.max(1, Number($('minSize').value) || 300)};
 }
 function defaultDeviceName() {
   const data = navigator.userAgentData;
@@ -85,7 +85,7 @@ async function saveSettings() {
   const next = form();
   if (!connectedProviders.some(p => p.id === next.providerId && p.connected)) throw new Error('연결된 번역 제공자를 선택하세요.');
   settings = (await send({type: 'SAVE_SETTINGS', settings: next})).settings;
-  show('feedback', '설정을 저장했습니다. 서버·제공자·모델·추론·메모를 바꾸면 실행 중인 탭 번역이 꺼집니다.');
+  show('feedback', '설정을 저장했습니다. 서버·제공자·모델·추론을 바꾸면 실행 중인 탭 번역이 꺼집니다.');
 }
 function renderSites() {
   const items = settings.autoSites.map(site => {
@@ -124,7 +124,7 @@ $('unpair').addEventListener('click', () => action(async () => {
 $('serverUrl').addEventListener('input', () => { connectedProviders = null; show('connectionMessage', '서버 주소가 변경되었습니다. 연결을 다시 테스트하세요. 다른 서버라면 다시 페어링해야 합니다.'); });
 (async () => {
   settings = (await send({type: 'GET_SETTINGS'})).settings;
-  for (const id of ['serverUrl', 'instructions', 'minSize']) $(id).value = settings[id];
+  for (const id of ['serverUrl', 'minSize']) $(id).value = settings[id];
   $('deviceName').value = settings.deviceName || defaultDeviceName();
   renderSites();
   await refreshPairing();
