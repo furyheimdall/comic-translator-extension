@@ -82,10 +82,42 @@
     image.dataset.comicTranslatorOriginalSrcset = record.source.srcset ?? '';
   }
   function resetAttribute(image, name, value) { if (value == null) image.removeAttribute(name); else image.setAttribute(name, value); }
+  function sameImage(a, b) {
+    try {
+      const x = new URL(a, location.href), y = new URL(b, location.href);
+      return x.origin + x.pathname === y.origin + y.pathname;
+    } catch { return false; }
+  }
+  function backgroundUrl(element) {
+    return /url\(["']?(.*?)["']?\)/.exec(getComputedStyle(element).backgroundImage || '')?.[1] || '';
+  }
+  // Some sites (e.g. X) paint the picture as a CSS background and keep a transparent <img>
+  // on top only for saving/dragging; swapping that <img> alone changes nothing visible.
+  function paintBackgrounds(record) {
+    const image = record.image, original = record.source?.src || '';
+    if (!original || Number(getComputedStyle(image).opacity) > 0.05) return;
+    record.backgrounds ||= [];
+    let scope = image.parentElement;
+    for (let depth = 0; scope && depth < 3; depth++, scope = scope.parentElement) {
+      const painted = [...scope.querySelectorAll('*')].filter(el => el !== image && !el.hasAttribute('data-comic-translator-ui') && sameImage(backgroundUrl(el), original));
+      for (const el of painted) {
+        if (!record.backgrounds.some(b => b.el === el)) record.backgrounds.push({el, value: el.style.getPropertyValue('background-image'), priority: el.style.getPropertyPriority('background-image')});
+        el.style.setProperty('background-image', `url("${record.asset.objectUrl}")`, 'important');
+      }
+      if (painted.length) break;
+    }
+  }
+  function unpaintBackgrounds(record) {
+    for (const b of record.backgrounds || []) {
+      if (b.value) b.el.style.setProperty('background-image', b.value, b.priority); else b.el.style.removeProperty('background-image');
+    }
+    record.backgrounds = null;
+  }
   function restore(record) {
     if (!record.swapped && !record.canvas) return;
     record.swapped = false;
     record.canvas?.remove(); record.canvas = null;
+    unpaintBackgrounds(record);
     record.image.style.opacity = record.opacity;
     if (record.source) {
       resetAttribute(record.image, 'src', record.source.src);
@@ -131,6 +163,7 @@
     image.removeAttribute('srcset');
     image.src = asset.objectUrl;
     image.dataset.comicTranslatorTranslated = 'blob';
+    paintBackgrounds(record);
     removeBadge(record);
   }
   async function consider(record) {
@@ -165,7 +198,7 @@
       if (record.canvas && src === record.source?.src && srcset === record.source?.srcset) return;
       if (!record.canvas && src === record.asset?.objectUrl && !srcset) return;
       // A site rewrote an original. Do not restore old attributes over that rewrite.
-      record.swapped = false; record.canvas?.remove(); record.canvas = null;
+      record.swapped = false; record.canvas?.remove(); record.canvas = null; unpaintBackgrounds(record);
       image.style.opacity = record.opacity;
       image.style.width = record.width; image.style.height = record.height;
       if (src === record.asset?.objectUrl) resetAttribute(image, 'src', record.source.src);
@@ -231,6 +264,8 @@
         record.asset?.images.delete(record); records.delete(image);
       }
       for (const [root, observer] of roots) if (root.host && !root.host.isConnected) { observer.disconnect(); roots.delete(root); }
+      // Frameworks may re-render the painted element; paint the translation onto the new one.
+      if (!originals) for (const record of records.values()) if (record.swapped && !record.canvas && record.asset?.objectUrl) paintBackgrounds(record);
       positionSoon();
     }, 3000);
   }
