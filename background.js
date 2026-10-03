@@ -401,15 +401,25 @@ function autoFor(url) {
     return /^https?:$/.test(parsed.protocol) && (settings.autoAll || settings.autoSites.includes(parsed.hostname));
   } catch { return false; }
 }
+function withoutHash(url) { return (url || '').split('#')[0]; }
+function hostOf(url) { try { return new URL(url).hostname; } catch { return ''; } }
 chrome.tabs.onUpdated.addListener((id, change, tab) => {
   ready.then(async () => {
     const state = tabs[id];
+    if (!state) return;
+    // A hash-only change (#3 → #4 in many readers) keeps the same document and its images.
+    if (change.url && change.status !== 'loading' && withoutHash(change.url) === withoutHash(state.url)) {
+      state.url = change.url; await save(); return;
+    }
     // A document reload invalidates frame-local object URLs even when its URL is unchanged.
-    if (state && (change.status === 'loading' || (change.url && change.url !== state.url))) {
+    if (change.status === 'loading' || (change.url && change.url !== state.url)) {
+      const {manual} = state, sameSite = hostOf(tab.url) === hostOf(state.url);
       await disable(id);
-      // Single-page apps change the URL without reloading the content script; restart it here.
+      // Translation the user turned on stays on while they read through the same site
+      // (next page, next chapter, SPA route changes); automatic rules also apply elsewhere.
       // After a real reload the new document's HELLO finds this state and resumes it.
       if (autoFor(tab.url)) await enable(id).catch(() => {});
+      else if (sameSite) await enable(id, manual).catch(() => {});
     }
   });
 });
