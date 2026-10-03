@@ -45,11 +45,19 @@ $('enabled').addEventListener('change', () => {
   });
 });
 $('originals').addEventListener('click', () => action(async () => render(await send({type: 'SET_ORIGINALS', tabId: currentTab.id, originals: !state.originals}))));
+// The main toggle lasts while this tab stays on the site; automatic rules turn it back on elsewhere.
+function renderScopeHint() {
+  $('scopeHint').hidden = !hostname;
+  $('scopeHint').textContent = settings.autoAll ? '모든 사이트에서 항상 켜기가 켜져 있어, 다른 사이트로 이동해도 다시 켜집니다.'
+    : settings.autoSites.includes(hostname) ? '같은 사이트 안에서는 계속 번역하고, 이 사이트는 새로 열 때도 자동으로 켜집니다. 다른 사이트로 이동하면 꺼집니다.'
+    : '같은 사이트 안에서는 페이지를 넘겨도 계속 번역하고, 다른 사이트로 이동하면 꺼집니다.';
+}
 $('autoSite').addEventListener('change', () => action(async () => {
   const autoSites = new Set(settings.autoSites);
   if ($('autoSite').checked) autoSites.add(hostname); else autoSites.delete(hostname);
   settings = (await send({type: 'SAVE_SETTINGS', settings: {...settings, autoSites: [...autoSites]}})).settings;
   show('feedback', $('autoSite').checked ? '이 사이트의 새 페이지에서도 자동으로 번역합니다.' : '이 사이트 자동 번역을 껐습니다.');
+  renderScopeHint();
 }));
 $('autoAll').addEventListener('change', () => action(async () => {
   const autoAll = $('autoAll').checked;
@@ -60,6 +68,7 @@ $('autoAll').addEventListener('change', () => action(async () => {
   // Turning it on starts (or widens a right-click-only) current tab right away.
   if (autoAll && hostname && (!state.enabled || state.manual)) render(await send({type: 'SET_ENABLED', tabId: currentTab.id, enabled: true}));
   show('feedback', autoAll ? '모든 사이트에서 탭 번역을 자동으로 켭니다.' : '모든 사이트 자동 번역을 껐습니다. 이미 켜진 탭은 그대로입니다.');
+  renderScopeHint();
 }));
 (async () => {
   settings = (await send({type: 'GET_SETTINGS'})).settings;
@@ -71,7 +80,8 @@ $('autoAll').addEventListener('change', () => action(async () => {
   $('autoSite').disabled = !eligible || !!settings.autoAll;
   if (eligible) {
     hostname = new URL(currentTab.url).hostname; $('site').textContent = hostname; $('autoSite').checked = settings.autoAll || settings.autoSites.includes(hostname);
+    renderScopeHint();
     await refresh();
-  } else show('site', '번역할 일반 웹 페이지에서 확장 프로그램을 열어 주세요.');
+  } else { show('site', '번역할 일반 웹 페이지에서 확장 프로그램을 열어 주세요.'); renderScopeHint(); }
   setInterval(() => refresh().catch(error => show('feedback', error.message, true)), 1000);
 })().catch(error => show('feedback', error.message, true));

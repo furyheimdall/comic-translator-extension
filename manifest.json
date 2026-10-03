@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "만화 번역 · 내 서버",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "description": "내 comic-translator 서버로 일본어 만화를 한국어로 번역합니다.",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "tabs", "declarativeNetRequest", "alarms", "contextMenus"],

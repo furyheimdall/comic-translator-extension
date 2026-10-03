@@ -11,8 +11,9 @@
   <header><img class="mark" src="icons/icon128.png" alt="" aria-hidden="true"><div><h1>만화 번역</h1><p>일본어 → 한국어 · 내 서버 · <span id="version"></span></p></div></header>
   <main>
     <section class="tab-panel" aria-labelledby="tab-title">
-      <div class="row"><h2 id="tab-title">현재 탭</h2><label class="toggle"><span>이 탭 번역</span><input type="checkbox" id="enabled"></label></div>
+      <div class="row"><h2 id="tab-title">현재 탭</h2><label class="toggle"><span>이 사이트 번역</span><input type="checkbox" id="enabled"></label></div>
       <p id="site" class="muted">탭 확인 중…</p>
+      <p id="scopeHint" class="hint">같은 사이트 안에서는 페이지를 넘겨도 계속 번역하고, 다른 사이트로 이동하면 꺼집니다.</p>
       <label class="check"><input type="checkbox" id="autoSite"> 이 사이트에서 항상 켜기</label>
       <label class="check"><input type="checkbox" id="autoAll"> 모든 사이트에서 항상 켜기</label>
       <div class="counts" aria-live="polite"><div><b id="queued">0</b><span>대기</span></div><div><b id="processing">0</b><span>번역 중</span></div><div><b id="done">0</b><span>완료</span></div><div><b id="failed">0</b><span>실패</span></div></div>
