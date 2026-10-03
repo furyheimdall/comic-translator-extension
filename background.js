@@ -21,7 +21,8 @@ const ready = (async () => {
 })();
 function save() {
   const snapshot = {translationTabs: structuredClone(tabs), liveSessions: structuredClone(sessions)};
-  saveChain = saveChain.catch(() => {}).then(() => chrome.storage.session.set(snapshot));
+  // Persistence only helps resume after a worker restart; a failed write must not stop translation.
+  saveChain = saveChain.then(() => chrome.storage.session.set(snapshot)).catch(error => console.warn('세션 상태 저장 실패:', errorText(error)));
   return saveChain;
 }
 function errorText(error) { return error?.message || String(error); }

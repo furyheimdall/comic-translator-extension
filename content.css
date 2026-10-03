@@ -13,7 +13,7 @@
   box-shadow: 0 2px 8px #0004 !important;
   max-width: 180px !important;
 }
-.comic-translator-badge[data-failed="true"] { background: rgba(150, 35, 45, .92) !important; }
+.comic-translator-badge[data-failed="true"] { background: rgba(150, 35, 45, .92) !important; max-width: 320px !important; border-radius: 10px !important; white-space: normal !important; }
 .comic-translator-spinner {
   display: none !important;
   width: 12px !important;

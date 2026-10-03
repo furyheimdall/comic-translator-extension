@@ -17,6 +17,17 @@
   }
   function localUrl(image) { return image.currentSrc || image.src; }
   function owned(url) { return [...assets.values()].some(asset => asset.objectUrl === url); }
+  // data: URLs (and other very long ones) carry the whole image. Exchange a short hash instead,
+  // so messages and the worker's session storage never hold image bytes as a key.
+  const keys = new Map();
+  async function assetKey(url) {
+    if (!url.startsWith('data:') && url.length <= 2048) return url;
+    if (!keys.has(url)) {
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(url));
+      keys.set(url, 'inline:' + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join(''));
+    }
+    return keys.get(url);
+  }
   const BADGE_STATE = {'번역 중': 'processing', '번역 대기': 'queued', '실패': 'failed'};
   function setBadge(record, text, error = '') {
     if (!enabled || !record.image.isConnected) return;
@@ -30,7 +41,8 @@
       document.documentElement.append(record.badge);
     }
     const state = BADGE_STATE[text] || 'queued';
-    record.badge.lastChild.textContent = text;
+    // The badge ignores the mouse, so a tooltip would never show: put the reason in the text.
+    record.badge.lastChild.textContent = state === 'failed' && error ? `실패 · ${error.length > 80 ? error.slice(0, 80) + '…' : error}` : text;
     record.badge.title = error;
     record.badge.dataset.state = state;
     record.badge.dataset.failed = state === 'failed' ? 'true' : 'false';
@@ -176,8 +188,10 @@
     }
     const url = localUrl(image);
     if (!url || owned(url) || !/^(https?:|data:|blob:)/.test(url)) return;
-    let asset = assets.get(url);
-    if (!asset) { asset = {url, images: new Set(), requested: false, dataUrl: null, objectUrl: null, blob: null, status: 'queued'}; assets.set(url, asset); }
+    const key = await assetKey(url);
+    if (localUrl(image) !== url || record.swapped) return;
+    let asset = assets.get(key);
+    if (!asset) { asset = {key, url, images: new Set(), requested: false, dataUrl: null, objectUrl: null, blob: null, status: 'queued'}; assets.set(key, asset); }
     if (record.asset !== asset) {
       record.asset?.images.delete(record);
       record.asset = asset; asset.images.add(record); capture(record);
@@ -187,7 +201,7 @@
     if (asset.requested && !record.retry) return;
     asset.requested = true;
     const retry = !!record.retry; record.retry = false;
-    try { await message({type: 'CANDIDATE', url, retry}); }
+    try { await message({type: 'CANDIDATE', url: key, retry}); }
     catch (error) { asset.requested = false; setBadge(record, '실패', error.message); }
   }
   function changed(record) {
@@ -278,11 +292,12 @@
       delete record.image.dataset.comicTranslatorOriginalSrc; delete record.image.dataset.comicTranslatorOriginalSrcset;
     }
     for (const asset of assets.values()) if (asset.objectUrl) URL.revokeObjectURL(asset.objectUrl);
-    records.clear(); assets.clear();
+    records.clear(); assets.clear(); keys.clear();
   }
-  async function imageBytes(url) {
-    const asset = assets.get(url);
+  async function imageBytes(key) {
+    const asset = assets.get(key);
     if (!asset || !enabled) throw new Error('원본 이미지가 현재 페이지에 없습니다.');
+    const url = asset.url;
     let blob;
     try {
       if (/^https?:/.test(url)) {
