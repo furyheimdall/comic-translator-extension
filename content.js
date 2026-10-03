@@ -125,11 +125,24 @@
     }
     record.backgrounds = null;
   }
+  // Inside <picture>, a matching <source srcset> wins over <img src>, so the swapped src
+  // would never be displayed. Park the sources' srcset while the translation is shown.
+  function parkSources(record) {
+    const picture = record.image.parentElement;
+    if (picture?.tagName !== 'PICTURE' || record.sources) return;
+    record.sources = [...picture.querySelectorAll(':scope > source[srcset]')].map(el => ({el, srcset: el.getAttribute('srcset')}));
+    for (const {el} of record.sources) el.removeAttribute('srcset');
+  }
+  function unparkSources(record) {
+    for (const {el, srcset} of record.sources || []) if (!el.hasAttribute('srcset')) el.setAttribute('srcset', srcset);
+    record.sources = null;
+  }
   function restore(record) {
     if (!record.swapped && !record.canvas) return;
     record.swapped = false;
     record.canvas?.remove(); record.canvas = null;
     unpaintBackgrounds(record);
+    unparkSources(record);
     record.image.style.opacity = record.opacity;
     if (record.source) {
       resetAttribute(record.image, 'src', record.source.src);
@@ -173,6 +186,7 @@
       image.style.width = `${rect.width}px`; image.style.height = `${rect.height}px`;
     }
     image.removeAttribute('srcset');
+    parkSources(record);
     image.src = asset.objectUrl;
     image.dataset.comicTranslatorTranslated = 'blob';
     paintBackgrounds(record);
@@ -213,6 +227,8 @@
       if (!record.canvas && src === record.asset?.objectUrl && !srcset) return;
       // A site rewrote an original. Do not restore old attributes over that rewrite.
       record.swapped = false; record.canvas?.remove(); record.canvas = null; unpaintBackgrounds(record);
+      // The site moved on to another image; its own <source> updates win, so do not put old srcsets back.
+      record.sources = null;
       image.style.opacity = record.opacity;
       image.style.width = record.width; image.style.height = record.height;
       if (src === record.asset?.objectUrl) resetAttribute(image, 'src', record.source.src);
