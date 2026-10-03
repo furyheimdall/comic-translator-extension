@@ -64,6 +64,7 @@ async function forgetPairing(notice) {
   await chrome.storage.local.set(settings);
   await Promise.all(Object.keys(tabs).map(id => disable(Number(id))));
   sessions = {}; await save();
+  buildMenus();
 }
 async function startPairing(serverUrl, name) {
   serverUrl = validateServer(serverUrl);
@@ -87,6 +88,7 @@ function pollPairing() {
         settings = {...settings, serverUrl: pairing.serverUrl, token: result.token, deviceName: result.name, notice: ''};
         await chrome.storage.local.set(settings);
         pairing = {...pairing, secret: '', status: 'approved'};
+        buildMenus();
       } else if (result.status !== 'pending') {
         pairing = {...pairing, secret: '', status: result.status, error: result.status === 'denied' ? '서버에서 연결 요청을 거절했습니다.' : '연결 요청이 만료되었습니다. 다시 요청하세요.'};
       }
@@ -119,21 +121,29 @@ function withServer(serverUrl) {
   const url = validateServer(serverUrl);
   return {...settings, serverUrl: url, token: url === settings.serverUrl ? settings.token : ''};
 }
-async function ensureSession(state) {
-  if (sessions[state.configKey]) return sessions[state.configKey];
-  if (!creations.has(state.configKey)) {
+// One image can be translated once with another model; that never touches the saved settings.
+function assetOf(page) { return page.assetUrl || page.url; }
+function pageConfig(state, page) {
+  const o = page?.override;
+  return o ? {...state.config, providerId: o.providerId, model: o.model, reasoning: o.reasoning} : state.config;
+}
+function sessionKey(state, page) { return page?.override ? JSON.stringify(llmKey(pageConfig(state, page))) : state.configKey; }
+async function ensureSession(state, page) {
+  const key = sessionKey(state, page), config = pageConfig(state, page);
+  if (sessions[key]) return sessions[key];
+  if (!creations.has(key)) {
     const work = (async () => {
-      const connection = await connect(state.config);
-      if (!connection.providers.some(p => p.id === state.config.providerId && p.connected)) throw new Error('연결된 번역 제공자를 선택하세요.');
-      const response = await api('/api/live', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: state.title, provider_id: state.config.providerId, model: state.config.model || undefined, reasoning: state.config.reasoning || 'default', engine: connection.engine})}, state.config);
+      const connection = await connect(config);
+      if (!connection.providers.some(p => p.id === config.providerId && p.connected)) throw new Error('연결된 번역 제공자를 선택하세요.');
+      const response = await api('/api/live', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: state.title, provider_id: config.providerId, model: config.model || undefined, reasoning: config.reasoning || 'default', engine: connection.engine})}, config);
       const live = await response.json();
-      sessions[state.configKey] = live.id;
+      sessions[key] = live.id;
       await save();
       return live.id;
-    })().finally(() => creations.delete(state.configKey));
-    creations.set(state.configKey, work);
+    })().finally(() => creations.delete(key));
+    creations.set(key, work);
   }
-  return creations.get(state.configKey);
+  return creations.get(key);
 }
 function notify(tabId, message, frameId) {
   return chrome.tabs.sendMessage(tabId, message, frameId == null ? {} : {frameId}).catch(() => {});
@@ -181,7 +191,7 @@ async function imageFetch(url, pageUrl) {
 async function bytesFor(tabId, page) {
   // Content fetches local URLs and supplies the canvas fallback; HTTP downloads remain in this worker.
   for (const frameId of page.frames) {
-    const result = await chrome.tabs.sendMessage(tabId, {type: 'GET_BYTES', url: page.url}, {frameId}).catch(() => null);
+    const result = await chrome.tabs.sendMessage(tabId, {type: 'GET_BYTES', url: assetOf(page)}, {frameId}).catch(() => null);
     if (result?.ok) return result;
     if (result?.error) page.lastByteError = result.error;
   }
@@ -198,7 +208,7 @@ async function sendOutput(tabId, state, page) {
     if (outputs.size > 12) outputs.delete(outputs.keys().next().value);
   }
   if (tabs[tabId] !== state) return;
-  for (const frame of page.frames) await notify(tabId, {type: 'RESULT', url: page.url, dataUrl}, frame);
+  for (const frame of page.frames) await notify(tabId, {type: 'RESULT', url: assetOf(page), dataUrl, replace: !!page.override}, frame);
 }
 async function recover(sid) {
   for (const [key, value] of Object.entries(sessions)) if (value === sid) delete sessions[key];
@@ -212,22 +222,23 @@ async function recover(sid) {
   await save();
 }
 async function upload(tabId, state, page) {
-  const predecessor = uploadChains.get(state.configKey) || Promise.resolve();
+  const chainKey = sessionKey(state, page);
+  const predecessor = uploadChains.get(chainKey) || Promise.resolve();
   let release;
   const finished = new Promise(resolve => { release = resolve; });
   const tail = predecessor.catch(() => {}).then(() => finished);
-  uploadChains.set(state.configKey, tail);
+  uploadChains.set(chainKey, tail);
   page.status = 'uploading';
   await save(); await badge(tabId);
-  await notify(tabId, {type: 'PAGE_STATUS', url: page.url, status: 'processing'});
+  await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'processing'});
   try {
-    const [sid, bytes] = await Promise.all([ensureSession(state), bytesFor(tabId, page)]);
+    const [sid, bytes] = await Promise.all([ensureSession(state, page), bytesFor(tabId, page)]);
     // Prepare two images in parallel, but append them in discovery order.
     await predecessor.catch(() => {});
     if (tabs[tabId] !== state) return;
     const form = new FormData();
     form.append('file', new Blob([decode(bytes.data)], {type: bytes.mime}), bytes.mime === 'image/png' ? 'page.png' : bytes.mime === 'image/webp' ? 'page.webp' : 'page.jpg');
-    form.append('source_name', page.url.slice(0, 500));
+    form.append('source_name', assetOf(page).slice(0, 500));
     page.sid = sid;
     const result = await (await api(`/api/live/${encodeURIComponent(sid)}/pages`, {method: 'POST', body: form}, state.config)).json();
     page.idx = result.idx;
@@ -244,10 +255,10 @@ async function upload(tabId, state, page) {
     if (tabs[tabId] !== state) return;
     if (error.status === 404 && page.sid) { await recover(page.sid); return; }
     page.status = 'failed'; page.error = errorText(error); state.message = page.error;
-    await notify(tabId, {type: 'PAGE_STATUS', url: page.url, status: 'failed', error: page.error});
+    await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error});
   } finally {
     release();
-    if (uploadChains.get(state.configKey) === tail) uploadChains.delete(state.configKey);
+    if (uploadChains.get(chainKey) === tail) uploadChains.delete(chainKey);
     await save(); await badge(tabId);
   }
 }
@@ -284,7 +295,7 @@ async function poll(tabId) {
             if (result.translated) { await sendOutput(tabId, state, page); page.status = 'done'; }
             else if (result.error || live.status === 'failed' || live.status === 'cancelled') {
               page.status = 'failed'; page.error = result.error || live.error || '번역 작업이 중단되었습니다.';
-              await notify(tabId, {type: 'PAGE_STATUS', url: page.url, status: 'failed', error: page.error});
+              await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error});
             }
           }
         } catch (error) {
@@ -292,9 +303,9 @@ async function poll(tabId) {
           if (error.status === 404) await recover(sid);
           else {
             state.message = errorText(error);
-            for (const page of pages) await notify(tabId, {type: 'PAGE_STATUS', url: page.url, status: 'processing', error: state.message});
+            for (const page of pages) await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'processing', error: state.message});
             if (error.status === 401 || error.status === 409 || error.status === 400) {
-              for (const page of pages) { page.status = 'failed'; page.error = state.message; await notify(tabId, {type: 'PAGE_STATUS', url: page.url, status: 'failed', error: page.error}); }
+              for (const page of pages) { page.status = 'failed'; page.error = state.message; await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error}); }
             }
           }
         }
@@ -352,7 +363,8 @@ async function handle(message, sender) {
       next.minSize = Math.max(1, Number(next.minSize) || 300);
       const changed = JSON.stringify(llmKey(next)) !== configKey();
       if (changed) await Promise.all(Object.keys(tabs).map(id => disable(Number(id))));
-      settings = next; await chrome.storage.local.set(settings); return {settings: {...settings, token: settings.token ? 'paired' : ''}};
+      settings = next; await chrome.storage.local.set(settings); buildMenus();
+      return {settings: {...settings, token: settings.token ? 'paired' : ''}};
     }
     case 'GET_STATE': return publicState(tabs[tabId]);
     case 'SET_ENABLED': if (message.enabled) await enable(tabId); else await disable(tabId); return publicState(tabs[tabId]);
@@ -366,8 +378,10 @@ async function handle(message, sender) {
     }
     case 'CANDIDATE': {
       const state = tabs[tabId]; if (!state || !sender.tab) return {accepted: false};
-      let page = state.pages[message.url];
-      if (!page) page = state.pages[message.url] = {url: message.url, frames: [], status: 'queued', idx: null, sid: null};
+      const o = message.override;
+      const pageKey = o ? `${message.url}\u0000${o.providerId}|${o.model}|${o.reasoning}` : message.url;
+      let page = state.pages[pageKey];
+      if (!page) page = state.pages[pageKey] = o ? {url: pageKey, assetUrl: message.url, override: o, frames: [], status: 'queued', idx: null, sid: null} : {url: message.url, frames: [], status: 'queued', idx: null, sid: null};
       // Picking a failed image again from the context menu retries it.
       if (message.retry && page.status === 'failed') Object.assign(page, {status: 'queued', idx: null, sid: null, error: null});
       if (!page.frames.includes(sender.frameId)) page.frames.push(sender.frameId);
@@ -381,8 +395,8 @@ async function handle(message, sender) {
           await recover(oldSid); resume(tabId);
         }
       }
-      else if (page.status === 'failed') await notify(tabId, {type: 'PAGE_STATUS', url: page.url, status: 'failed', error: page.error}, sender.frameId);
-      else { await notify(tabId, {type: 'PAGE_STATUS', url: page.url, status: page.status === 'queued' ? 'queued' : 'processing'}, sender.frameId); resume(tabId); }
+      else if (page.status === 'failed') await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error}, sender.frameId);
+      else { await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: page.status === 'queued' ? 'queued' : 'processing'}, sender.frameId); resume(tabId); }
       return {accepted: true};
     }
     case 'FETCH_IMAGE': if (!sender.tab || !tabs[tabId]) throw new Error('이 탭의 번역이 꺼져 있습니다.'); return imageFetch(message.url, message.pageUrl);
@@ -425,18 +439,54 @@ chrome.tabs.onUpdated.addListener((id, change, tab) => {
 });
 chrome.alarms.onAlarm.addListener(() => { ready.then(() => Object.keys(tabs).forEach(id => resume(Number(id)))); });
 // ---------------------------------------------------------------- context menu
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: 'translate-image', title: '이 이미지 번역', contexts: ['image'],
-    documentUrlPatterns: ['http://*/*', 'https://*/*'],
+// "이 이미지를 다음 모델로 번역" lists every model the paired server offers. Choosing one
+// translates that image once with it; the saved provider/model/reasoning stay unchanged.
+let menuChoices = {}, menuChain = Promise.resolve();
+function buildMenus() {
+  menuChain = menuChain.catch(() => {}).then(async () => {
+    let entries;
+    try {
+      if (!settings.serverUrl) throw new Error('먼저 설정에서 서버를 연결하세요.');
+      const {providers} = await connect(settings);
+      entries = [];
+      for (const provider of providers.filter(p => p.connected)) {
+        const options = await (await api(`/api/providers/${encodeURIComponent(provider.id)}/options`)).json();
+        // Keep the reader's reasoning level when this provider supports it, so a switch stays as fast.
+        const reasoning = options.reasoning_levels.some(l => l.value === settings.reasoning) ? settings.reasoning : 'default';
+        for (const model of options.models) {
+          const current = provider.id === settings.providerId && model === (settings.model || options.default_model);
+          entries.push({providerId: provider.id, model, reasoning, title: `${provider.name} · ${model}${current ? ' (현재 설정)' : ''}`});
+        }
+      }
+      if (!entries.length) throw new Error('서버에 연결된 번역 제공자가 없습니다.');
+    } catch (error) { entries = errorText(error); }
+    await chrome.contextMenus.removeAll();
+    const create = (props) => new Promise(resolve => chrome.contextMenus.create(props, () => { void chrome.runtime.lastError; resolve(); }));
+    const base = {contexts: ['image'], documentUrlPatterns: ['http://*/*', 'https://*/*']};
+    await create({...base, id: 'translate-image', title: '이 이미지 번역'});
+    await create({...base, id: 'translate-with', title: '이 이미지를 다음 모델로 번역'});
+    menuChoices = {};
+    if (typeof entries === 'string') await create({...base, id: 'model-none', parentId: 'translate-with', title: entries, enabled: false});
+    else for (const [index, entry] of entries.entries()) {
+      menuChoices[`model-${index}`] = entry;
+      await create({...base, id: `model-${index}`, parentId: 'translate-with', title: entry.title});
+    }
   });
-});
+  return menuChain;
+}
+ready.then(buildMenus);
+chrome.runtime.onInstalled.addListener(() => { ready.then(buildMenus); });
 function onMenuClick(info, tab) {
-  if (info.menuItemId !== 'translate-image' || !tab?.id || !info.srcUrl) return Promise.resolve();
+  const id = String(info.menuItemId);
+  if ((id !== 'translate-image' && !id.startsWith('model-')) || !tab?.id || !info.srcUrl) return Promise.resolve();
   return ready.then(async () => {
+    await menuChain.catch(() => {}); // a restarted worker rebuilds the model list first
+    const choice = menuChoices[id];
+    if (id !== 'translate-image' && !choice) return;
     if (!settings.serverUrl || !settings.providerId) { chrome.runtime.openOptionsPage(); return; }
     await enable(tab.id, true);
-    await notify(tab.id, {type: 'TRANSLATE_IMAGE', url: info.srcUrl}, info.frameId);
+    const override = choice && {providerId: choice.providerId, model: choice.model, reasoning: choice.reasoning};
+    await notify(tab.id, {type: 'TRANSLATE_IMAGE', url: info.srcUrl, override}, info.frameId);
   }).catch(error => { if (tabs[tab.id]) tabs[tab.id].message = errorText(error); });
 }
 chrome.contextMenus.onClicked.addListener(onMenuClick);

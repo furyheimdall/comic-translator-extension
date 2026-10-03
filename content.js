@@ -218,6 +218,21 @@
     try { await message({type: 'CANDIDATE', url: key, retry}); }
     catch (error) { asset.requested = false; setBadge(record, '실패', error.message); }
   }
+  // One-off translation with another model; replaces whatever this image currently shows.
+  async function requestWith(record, override) {
+    let asset = record.asset;
+    if (!asset) {
+      const url = localUrl(record.image);
+      if (!url || owned(url) || !/^(https?:|data:|blob:)/.test(url)) return;
+      const key = await assetKey(url);
+      asset = assets.get(key);
+      if (!asset) { asset = {key, url, images: new Set(), requested: false, dataUrl: null, objectUrl: null, blob: null, status: 'queued'}; assets.set(key, asset); }
+      record.asset = asset; asset.images.add(record); capture(record);
+    }
+    setBadge(record, '번역 대기');
+    try { await message({type: 'CANDIDATE', url: asset.key, override}); }
+    catch (error) { setBadge(record, '실패', error.message); }
+  }
   function changed(record) {
     if (!enabled) return;
     const image = record.image;
@@ -354,6 +369,7 @@
         scanNodes(document);
         const targets = [...records.values()].filter(record => localUrl(record.image) === payload.url || record.image.src === payload.url);
         for (const record of targets) {
+          if (payload.override) { requestWith(record, payload.override); continue; }
           record.forced = true;
           if (record.asset?.status === 'failed') { record.asset.status = 'queued'; record.asset.error = ''; record.retry = true; }
           consider(record);
@@ -372,6 +388,11 @@
       }
       case 'RESULT': {
         const asset = assets.get(payload.url); if (!asset || !enabled) break;
+        if (payload.replace && asset.objectUrl) {
+          // A one-off model result replaces the shown translation.
+          for (const record of asset.images) restore(record);
+          URL.revokeObjectURL(asset.objectUrl); asset.objectUrl = null;
+        }
         if (!asset.objectUrl) {
           asset.blob = new Blob([Uint8Array.from(atob(payload.dataUrl.split(',')[1]), c => c.charCodeAt(0))], {type: 'image/png'});
           asset.objectUrl = URL.createObjectURL(asset.blob);
