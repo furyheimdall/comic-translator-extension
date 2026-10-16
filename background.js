@@ -1,5 +1,11 @@
 const DEFAULTS = {serverUrl: '', token: '', deviceName: '', notice: '', providerId: '', providerLabel: '', model: '', reasoning: 'default', autoAll: false, autoSites: [], minSize: 300};
 const PAIR_POLL_MS = 2000;
+// Status polls stay at 2s. Network errors and HTTP 5xx back off, then the page is marked failed.
+const POLL_BASE_MS = 2000;
+const POLL_MAX_DELAY_MS = 30000;
+const POLL_MAX_ATTEMPTS = 5;
+function transientPollError(error) { return error?.status == null || error.status >= 500; }
+function pollBackoffMs(attempt) { return Math.min(POLL_BASE_MS * 2 ** (attempt - 1), POLL_MAX_DELAY_MS); }
 let pairing = null; // {serverUrl, id, secret, code, expiresAt, status, error}
 let settings, tabs = {}, sessions = {}, saveChain = Promise.resolve(), retryChain = Promise.resolve();
 const creations = new Map(), uploadChains = new Map(), running = new Set(), polling = new Set(), outputs = new Map();
@@ -278,16 +284,24 @@ async function pump(tabId) {
 async function poll(tabId) {
   if (polling.has(tabId) || !tabs[tabId]) return;
   polling.add(tabId);
+  // Consecutive network/5xx failures per server session. A successful poll clears the count.
+  const attempts = new Map(), retryAt = new Map();
   try {
     while (tabs[tabId]) {
       const state = tabs[tabId];
       const pending = Object.values(state.pages).filter(p => p.status === 'processing' && p.idx != null);
       if (!pending.length) break;
+      const now = Date.now();
+      let polled = false, nextRetry = Infinity;
       for (const sid of new Set(pending.map(p => p.sid))) {
+        const due = retryAt.get(sid) || 0;
+        if (due > now) { nextRetry = Math.min(nextRetry, due); continue; }
         const pages = pending.filter(p => p.sid === sid);
+        polled = true;
         try {
           const live = await (await api(`/api/live/${encodeURIComponent(sid)}?pages=${pages.map(p => p.idx).join(',')}`, {}, state.config)).json();
           if (tabs[tabId] !== state) break;
+          attempts.delete(sid); retryAt.delete(sid);
           state.message = live.message || live.error || '';
           for (const result of live.pages) {
             const page = pages.find(p => p.idx === result.idx);
@@ -300,8 +314,22 @@ async function poll(tabId) {
           }
         } catch (error) {
           if (tabs[tabId] !== state) break;
-          if (error.status === 404) await recover(sid);
-          else {
+          if (error.status === 404) { attempts.delete(sid); retryAt.delete(sid); await recover(sid); }
+          else if (transientPollError(error)) {
+            const attempt = (attempts.get(sid) || 0) + 1;
+            if (attempt >= POLL_MAX_ATTEMPTS) {
+              attempts.delete(sid); retryAt.delete(sid);
+              const failed = `${errorText(error)} 여러 번 다시 시도한 뒤 실패로 표시했습니다.`;
+              state.message = failed;
+              for (const page of pages) { page.status = 'failed'; page.error = failed; await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error}); }
+            } else {
+              attempts.set(sid, attempt);
+              const at = Date.now() + pollBackoffMs(attempt);
+              retryAt.set(sid, at); nextRetry = Math.min(nextRetry, at);
+              state.message = `${errorText(error)} (${attempt}/${POLL_MAX_ATTEMPTS}회 재시도)`;
+              for (const page of pages) await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'processing', error: state.message});
+            }
+          } else {
             state.message = errorText(error);
             for (const page of pages) await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'processing', error: state.message});
             if (error.status === 401 || error.status === 409 || error.status === 400) {
@@ -311,7 +339,10 @@ async function poll(tabId) {
         }
       }
       await save(); await badge(tabId);
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (!tabs[tabId] || !Object.values(tabs[tabId].pages).some(p => p.status === 'processing' && p.idx != null)) break;
+      // A sid in backoff is skipped above, so the server is not hit every 2s. Sleep until that retry when nothing else was polled.
+      const wait = !polled && nextRetry < Infinity ? Math.max(250, nextRetry - Date.now()) : POLL_BASE_MS;
+      await new Promise(resolve => setTimeout(resolve, wait));
     }
   } finally { polling.delete(tabId); }
 }
