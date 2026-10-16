@@ -137,7 +137,10 @@ function pageConfig(state, page) {
   const o = page?.override;
   return o ? {...state.config, providerId: o.providerId, model: o.model, reasoning: o.reasoning} : state.config;
 }
-function sessionKey(state, page) { return page?.override ? JSON.stringify(llmKey(pageConfig(state, page))) : state.configKey; }
+function sessionKey(state, page) {
+  const key = page?.override ? JSON.stringify(llmKey(pageConfig(state, page))) : state.configKey;
+  return page?.priority === 'single' ? `${key}:single` : key;
+}
 async function ensureSession(state, page) {
   const key = sessionKey(state, page), config = pageConfig(state, page);
   if (sessions[key]) return sessions[key];
@@ -145,7 +148,7 @@ async function ensureSession(state, page) {
     const work = (async () => {
       const connection = await connect(config);
       if (!connection.providers.some(p => p.id === config.providerId && p.connected)) throw new Error('연결된 번역 제공자를 선택하세요.');
-      const response = await api('/api/live', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: state.title, provider_id: config.providerId, model: config.model || undefined, reasoning: config.reasoning || 'default', engine: connection.engine})}, config);
+      const response = await api('/api/live', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: state.title, provider_id: config.providerId, model: config.model || undefined, reasoning: config.reasoning || 'default', engine: connection.engine, priority: page.priority})}, config);
       const live = await response.json();
       sessions[key] = live.id;
       await save();
@@ -157,6 +160,10 @@ async function ensureSession(state, page) {
 }
 function notify(tabId, message, frameId) {
   return chrome.tabs.sendMessage(tabId, message, frameId == null ? {} : {frameId}).catch(() => {});
+}
+function notifyPage(tabId, page, message, frameId) {
+  const frames = frameId == null ? page.frames : [frameId];
+  return Promise.all(frames.map(frame => notify(tabId, {...message, url: assetOf(page), requestId: page.requests?.[frame]}, frame)));
 }
 async function badge(tabId) {
   const state = tabs[tabId];
@@ -217,8 +224,8 @@ async function sendOutput(tabId, state, page) {
     // Bounded cache; completed images remain in the document, and can be fetched again.
     if (outputs.size > 12) outputs.delete(outputs.keys().next().value);
   }
-  if (tabs[tabId] !== state) return;
-  for (const frame of page.frames) await notify(tabId, {type: 'RESULT', url: assetOf(page), dataUrl, replace: !!page.override}, frame);
+  if (tabs[tabId] !== state || state.pages[page.url] !== page) return;
+  await notifyPage(tabId, page, {type: 'RESULT', dataUrl, replace: page.priority === 'single' || !!page.override});
 }
 async function recover(sid) {
   for (const [key, value] of Object.entries(sessions)) if (value === sid) delete sessions[key];
@@ -240,19 +247,19 @@ async function upload(tabId, state, page) {
   uploadChains.set(chainKey, tail);
   page.status = 'uploading';
   await save(); await badge(tabId);
-  await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'processing'});
+  await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'processing'});
   try {
     const [sid, bytes] = await Promise.all([ensureSession(state, page), bytesFor(tabId, page)]);
     // Prepare two images in parallel, but append them in discovery order.
     await predecessor.catch(() => {});
-    if (tabs[tabId] !== state) return;
+    if (tabs[tabId] !== state || state.pages[page.url] !== page) return;
     const form = new FormData();
     form.append('file', new Blob([decode(bytes.data)], {type: bytes.mime}), bytes.mime === 'image/png' ? 'page.png' : bytes.mime === 'image/webp' ? 'page.webp' : 'page.jpg');
     form.append('source_name', assetOf(page).slice(0, 500));
     page.sid = sid;
     const result = await (await api(`/api/live/${encodeURIComponent(sid)}/pages`, {method: 'POST', body: form}, state.config)).json();
     page.idx = result.idx;
-    if (tabs[tabId] !== state) {
+    if (tabs[tabId] !== state || state.pages[page.url] !== page) {
       await api(`/api/live/${encodeURIComponent(sid)}/discard`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pages: [result.idx]})}, state.config).catch(() => {});
       return;
     }
@@ -262,27 +269,28 @@ async function upload(tabId, state, page) {
     if (result.translated) await sendOutput(tabId, state, page);
     state.message = '번역 작업을 서버에 보냈습니다.';
   } catch (error) {
-    if (tabs[tabId] !== state) return;
+    if (tabs[tabId] !== state || state.pages[page.url] !== page) return;
     if (error.status === 404 && page.sid) { await recover(page.sid); return; }
     page.status = 'failed'; page.error = errorText(error); state.message = page.error;
-    await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error});
+    await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'failed', error: page.error});
   } finally {
     release();
     if (uploadChains.get(chainKey) === tail) uploadChains.delete(chainKey);
     await save(); await badge(tabId);
   }
 }
-async function pump(tabId) {
-  if (running.has(tabId)) return;
-  running.add(tabId);
+async function pump(tabId, priority = false) {
+  const lane = `${tabId}:${priority ? 'single' : 'normal'}`;
+  if (running.has(lane)) return;
+  running.add(lane);
   try {
     while (tabs[tabId]) {
       const state = tabs[tabId];
-      const queued = Object.values(state.pages).filter(p => p.status === 'queued').slice(0, 2);
+      const queued = Object.values(state.pages).filter(p => p.status === 'queued' && (p.priority === 'single') === priority).slice(0, priority ? 1 : 2);
       if (!queued.length) break;
       await Promise.all(queued.map(page => upload(tabId, state, page)));
     }
-  } finally { running.delete(tabId); }
+  } finally { running.delete(lane); }
   poll(tabId);
 }
 async function poll(tabId) {
@@ -309,11 +317,11 @@ async function poll(tabId) {
           state.message = live.message || live.error || '';
           for (const result of live.pages) {
             const page = pages.find(p => p.idx === result.idx);
-            if (!page) continue;
+            if (!page || state.pages[page.url] !== page) continue;
             if (result.translated) { await sendOutput(tabId, state, page); page.status = 'done'; }
             else if (result.error || live.status === 'failed' || live.status === 'cancelled') {
               page.status = 'failed'; page.error = result.error || live.error || '번역 작업이 중단되었습니다.';
-              await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error});
+              await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'failed', error: page.error});
             }
           }
         } catch (error) {
@@ -325,19 +333,19 @@ async function poll(tabId) {
               attempts.delete(sid); retryAt.delete(sid);
               const failed = `${errorText(error)} 여러 번 다시 시도한 뒤 실패로 표시했습니다.`;
               state.message = failed;
-              for (const page of pages) { page.status = 'failed'; page.error = failed; await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error}); }
+              for (const page of pages) if (state.pages[page.url] === page) { page.status = 'failed'; page.error = failed; await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'failed', error: page.error}); }
             } else {
               attempts.set(sid, attempt);
               const at = Date.now() + pollBackoffMs(attempt);
               retryAt.set(sid, at); nextRetry = Math.min(nextRetry, at);
               state.message = `${errorText(error)} (${attempt}/${POLL_MAX_ATTEMPTS}회 재시도)`;
-              for (const page of pages) await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'processing', error: state.message});
+              for (const page of pages) if (state.pages[page.url] === page) await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'processing', error: state.message});
             }
           } else {
             state.message = errorText(error);
-            for (const page of pages) await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'processing', error: state.message});
+            for (const page of pages) if (state.pages[page.url] === page) await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'processing', error: state.message});
             if (error.status === 401 || error.status === 409 || error.status === 400) {
-              for (const page of pages) { page.status = 'failed'; page.error = state.message; await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error}); }
+              for (const page of pages) if (state.pages[page.url] === page) { page.status = 'failed'; page.error = state.message; await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'failed', error: page.error}); }
             }
           }
         }
@@ -350,7 +358,9 @@ async function poll(tabId) {
     }
   } finally { polling.delete(tabId); }
 }
-function resume(tabId) { pump(tabId).catch(error => { if (tabs[tabId]) tabs[tabId].message = errorText(error); }); }
+function resume(tabId) {
+  for (const priority of [true, false]) pump(tabId, priority).catch(error => { if (tabs[tabId]) tabs[tabId].message = errorText(error); });
+}
 async function disable(tabId) {
   const state = tabs[tabId];
   if (!state) return;
@@ -417,6 +427,22 @@ async function handle(message, sender) {
       const pageKey = o ? `${message.url}\u0000${o.providerId}|${o.model}|${o.reasoning}` : message.url;
       let page = state.pages[pageKey];
       if (!page) page = state.pages[pageKey] = o ? {url: pageKey, assetUrl: message.url, override: o, frames: [], status: 'queued', idx: null, sid: null} : {url: message.url, frames: [], status: 'queued', idx: null, sid: null};
+      if (message.priority === 'single' && page.priority !== 'single') {
+        const previous = page;
+        // Replace the local owner before any await: an old upload/poll cannot publish over this request.
+        page = state.pages[pageKey] = {...previous, priority: 'single', requests: {...previous.requests}};
+        if (previous.status === 'uploading' || previous.status === 'processing') {
+          Object.assign(page, {status: 'queued', idx: null, sid: null, error: null});
+          if (previous.idx != null) {
+            // Pending automatic work is discarded; an already-running image may finish.
+            api(`/api/live/${encodeURIComponent(previous.sid)}/discard`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pages: [previous.idx]})}, state.config).catch(() => {});
+          }
+        }
+      }
+      if (message.requestId) {
+        page.requests ||= {};
+        page.requests[sender.frameId] = message.requestId;
+      }
       // Picking a failed image again from the context menu retries it.
       if (message.retry && page.status === 'failed') Object.assign(page, {status: 'queued', idx: null, sid: null, error: null});
       if (!page.frames.includes(sender.frameId)) page.frames.push(sender.frameId);
@@ -430,8 +456,8 @@ async function handle(message, sender) {
           await recover(oldSid); resume(tabId);
         }
       }
-      else if (page.status === 'failed') await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: 'failed', error: page.error}, sender.frameId);
-      else { await notify(tabId, {type: 'PAGE_STATUS', url: assetOf(page), status: page.status === 'queued' ? 'queued' : 'processing'}, sender.frameId); resume(tabId); }
+      else if (page.status === 'failed') await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'failed', error: page.error}, sender.frameId);
+      else { await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: page.status === 'queued' ? 'queued' : 'processing'}, sender.frameId); resume(tabId); }
       return {accepted: true};
     }
     case 'FETCH_IMAGE': if (!sender.tab || !tabs[tabId]) throw new Error('이 탭의 번역이 꺼져 있습니다.'); return imageFetch(message.url, message.pageUrl);
