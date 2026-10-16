@@ -45,7 +45,11 @@ async function api(path, options = {}, config = settings) {
   if (config.token) headers.set('Authorization', `Bearer ${config.token}`);
   let response;
   try { response = await fetch(validateServer(config.serverUrl) + path, {...options, headers, signal: AbortSignal.timeout(120000)}); }
-  catch (cause) { throw new Error('서버에 연결할 수 없습니다. 주소·네트워크·서버 실행 상태를 확인하세요.', {cause}); }
+  catch (cause) {
+    const error = new Error('서버에 연결할 수 없습니다. 주소·네트워크·서버 실행 상태를 확인하세요.', {cause});
+    error.transient = true;
+    throw error;
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     if (response.status === 401 && config.token && config.token === settings.token) {
@@ -70,7 +74,7 @@ async function forgetPairing(notice) {
   await chrome.storage.local.set(settings);
   await Promise.all(Object.keys(tabs).map(id => disable(Number(id))));
   sessions = {}; await save();
-  buildMenus();
+  buildMenus({force: true});
 }
 async function startPairing(serverUrl, name) {
   serverUrl = validateServer(serverUrl);
@@ -94,7 +98,7 @@ function pollPairing() {
         settings = {...settings, serverUrl: pairing.serverUrl, token: result.token, deviceName: result.name, notice: ''};
         await chrome.storage.local.set(settings);
         pairing = {...pairing, secret: '', status: 'approved'};
-        buildMenus();
+        buildMenus({force: true});
       } else if (result.status !== 'pending') {
         pairing = {...pairing, secret: '', status: result.status, error: result.status === 'denied' ? '서버에서 연결 요청을 거절했습니다.' : '연결 요청이 만료되었습니다. 다시 요청하세요.'};
       }
@@ -394,7 +398,7 @@ async function handle(message, sender) {
       next.minSize = Math.max(1, Number(next.minSize) || 300);
       const changed = JSON.stringify(llmKey(next)) !== configKey();
       if (changed) await Promise.all(Object.keys(tabs).map(id => disable(Number(id))));
-      settings = next; await chrome.storage.local.set(settings); buildMenus();
+      settings = next; await chrome.storage.local.set(settings); buildMenus({force: true});
       return {settings: {...settings, token: settings.token ? 'paired' : ''}};
     }
     case 'GET_STATE': return publicState(tabs[tabId]);
@@ -472,46 +476,92 @@ chrome.alarms.onAlarm.addListener(() => { ready.then(() => Object.keys(tabs).for
 // ---------------------------------------------------------------- context menu
 // "이 이미지를 다음 모델로 번역" lists every model the paired server offers. Choosing one
 // translates that image once with it; the saved provider/model/reasoning stay unchanged.
+// The 30s resume alarm wakes this worker, so the list is cached instead of fetched every wake.
+const MENU_CACHE_KEY = 'modelMenuCache';
+const MENU_COOLDOWN_MS = 5 * 60 * 1000;
 let menuChoices = {}, menuChain = Promise.resolve();
-function buildMenus() {
+async function tokenTag(token) {
+  if (!token) return '';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  return [...new Uint8Array(digest)].slice(0, 8).map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+async function menuCacheIdentity() {
+  return {serverUrl: settings.serverUrl || '', tokenTag: await tokenTag(settings.token), reasoning: settings.reasoning || 'default'};
+}
+function sameMenuAccount(cache, id) { return !!cache && cache.serverUrl === id.serverUrl && cache.tokenTag === id.tokenTag; }
+function menuCacheFresh(cache, id) {
+  return sameMenuAccount(cache, id) && cache.reasoning === id.reasoning && typeof cache.at === 'number' && Date.now() - cache.at < MENU_COOLDOWN_MS && Array.isArray(cache.entries);
+}
+function menuCacheUsable(cache, id) { return sameMenuAccount(cache, id) && Array.isArray(cache.entries) && cache.entries.length > 0; }
+async function readMenuCache() { return (await chrome.storage.local.get(MENU_CACHE_KEY))[MENU_CACHE_KEY] || null; }
+async function writeMenuCache(entries, error) {
+  await chrome.storage.local.set({[MENU_CACHE_KEY]: {...await menuCacheIdentity(), at: Date.now(), entries, error}});
+}
+function entryTitle(entry) {
+  const current = entry.providerId === settings.providerId && entry.model === (settings.model || entry.defaultModel);
+  return `${entry.providerName} · ${entry.model}${current ? ' (현재 설정)' : ''}`;
+}
+async function loadModelEntries() {
+  if (!settings.serverUrl) throw new Error('먼저 설정에서 서버를 연결하세요.');
+  const {providers} = await connect(settings);
+  const entries = [];
+  for (const provider of providers.filter(p => p.connected)) {
+    const options = await (await api(`/api/providers/${encodeURIComponent(provider.id)}/options`)).json();
+    // Keep the reader's reasoning level when this provider supports it, so a switch stays as fast.
+    const reasoning = options.reasoning_levels.some(l => l.value === settings.reasoning) ? settings.reasoning : 'default';
+    for (const model of options.models) entries.push({providerId: provider.id, providerName: provider.name, model, reasoning, defaultModel: options.default_model || ''});
+  }
+  if (!entries.length) throw new Error('서버에 연결된 번역 제공자가 없습니다.');
+  return entries;
+}
+async function renderModelMenus(entries) {
+  await chrome.contextMenus.removeAll();
+  const create = (props) => new Promise(resolve => chrome.contextMenus.create(props, () => { void chrome.runtime.lastError; resolve(); }));
+  const base = {contexts: ['image'], documentUrlPatterns: ['http://*/*', 'https://*/*']};
+  await create({...base, id: 'translate-image', title: '이 이미지 번역'});
+  await create({...base, id: 'translate-with', title: '이 이미지를 다음 모델로 번역'});
+  menuChoices = {};
+  if (typeof entries === 'string') { await create({...base, id: 'model-none', parentId: 'translate-with', title: entries, enabled: false}); return; }
+  for (const [index, entry] of entries.entries()) {
+    menuChoices[`model-${index}`] = entry;
+    await create({...base, id: `model-${index}`, parentId: 'translate-with', title: entryTitle(entry)});
+  }
+}
+function buildMenus({force = false} = {}) {
   menuChain = menuChain.catch(() => {}).then(async () => {
-    let entries;
+    const id = await menuCacheIdentity();
+    const cache = await readMenuCache();
+    if (!force && menuCacheFresh(cache, id)) {
+      await renderModelMenus(cache.entries.length ? cache.entries : (cache.error || '서버에 연결할 수 없습니다.'));
+      return;
+    }
     try {
-      if (!settings.serverUrl) throw new Error('먼저 설정에서 서버를 연결하세요.');
-      const {providers} = await connect(settings);
-      entries = [];
-      for (const provider of providers.filter(p => p.connected)) {
-        const options = await (await api(`/api/providers/${encodeURIComponent(provider.id)}/options`)).json();
-        // Keep the reader's reasoning level when this provider supports it, so a switch stays as fast.
-        const reasoning = options.reasoning_levels.some(l => l.value === settings.reasoning) ? settings.reasoning : 'default';
-        for (const model of options.models) {
-          const current = provider.id === settings.providerId && model === (settings.model || options.default_model);
-          entries.push({providerId: provider.id, model, reasoning, title: `${provider.name} · ${model}${current ? ' (현재 설정)' : ''}`});
-        }
+      const entries = await loadModelEntries();
+      await writeMenuCache(entries, '');
+      await renderModelMenus(entries);
+    } catch (error) {
+      const nowId = await menuCacheIdentity();
+      const accountUnchanged = nowId.serverUrl === id.serverUrl && nowId.tokenTag === id.tokenTag;
+      // Network/5xx only: a logical error (no provider, unpaired) still replaces the menu.
+      if (accountUnchanged && (error.transient || error.status >= 500) && menuCacheUsable(cache, nowId)) {
+        await writeMenuCache(cache.entries, '');
+        await renderModelMenus(cache.entries);
+        return;
       }
-      if (!entries.length) throw new Error('서버에 연결된 번역 제공자가 없습니다.');
-    } catch (error) { entries = errorText(error); }
-    await chrome.contextMenus.removeAll();
-    const create = (props) => new Promise(resolve => chrome.contextMenus.create(props, () => { void chrome.runtime.lastError; resolve(); }));
-    const base = {contexts: ['image'], documentUrlPatterns: ['http://*/*', 'https://*/*']};
-    await create({...base, id: 'translate-image', title: '이 이미지 번역'});
-    await create({...base, id: 'translate-with', title: '이 이미지를 다음 모델로 번역'});
-    menuChoices = {};
-    if (typeof entries === 'string') await create({...base, id: 'model-none', parentId: 'translate-with', title: entries, enabled: false});
-    else for (const [index, entry] of entries.entries()) {
-      menuChoices[`model-${index}`] = entry;
-      await create({...base, id: `model-${index}`, parentId: 'translate-with', title: entry.title});
+      const message = errorText(error);
+      await writeMenuCache([], message);
+      await renderModelMenus(message);
     }
   });
   return menuChain;
 }
-ready.then(buildMenus);
-chrome.runtime.onInstalled.addListener(() => { ready.then(buildMenus); });
+ready.then(() => buildMenus());
+chrome.runtime.onInstalled.addListener(() => { ready.then(() => buildMenus({force: true})); });
 function onMenuClick(info, tab) {
   const id = String(info.menuItemId);
   if ((id !== 'translate-image' && !id.startsWith('model-')) || !tab?.id || !info.srcUrl) return Promise.resolve();
   return ready.then(async () => {
-    await menuChain.catch(() => {}); // a restarted worker rebuilds the model list first
+    await menuChain.catch(() => {}); // a restarted worker restores the cached model list first
     const choice = menuChoices[id];
     if (id !== 'translate-image' && !choice) return;
     if (!settings.serverUrl || !settings.providerId) { chrome.runtime.openOptionsPage(); return; }
