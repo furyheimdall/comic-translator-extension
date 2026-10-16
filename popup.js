@@ -9,6 +9,11 @@ function show(id, text, error = false) { $(id).textContent = text; $(id).classLi
 $('version').textContent = `v${chrome.runtime.getManifest().version}`;
 function ready() { return !!(settings.serverUrl && settings.providerId); }
 function renderSummary(status) {
+  const needsServer = !settings.serverUrl;
+  $('serverEmpty').hidden = !needsServer;
+  $('tabPanel').hidden = needsServer;
+  $('connection').hidden = needsServer;
+  if (needsServer) return;
   const server = settings.serverUrl ? new URL(settings.serverUrl).host : '설정 안 됨';
   $('summaryServer').textContent = status.paired ? `${server} · 페어링됨 (${status.deviceName})` : settings.serverUrl ? `${server} · ${status.notice || '페어링 안 됨'}` : server;
   $('summaryLlm').textContent = settings.providerLabel || (settings.providerId ? '제공자 선택됨' : '설정 안 됨');
@@ -37,6 +42,11 @@ async function action(fn) {
   finally { busy = false; await refresh().catch(() => {}); }
 }
 $('openOptions').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('openOptionsEmpty').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('installGuide').addEventListener('click', event => {
+  event.preventDefault();
+  chrome.tabs.create({url: 'https://github.com/furyheimdall/comic-translator'});
+});
 $('enabled').addEventListener('change', () => {
   const enabled = $('enabled').checked;
   action(async () => {

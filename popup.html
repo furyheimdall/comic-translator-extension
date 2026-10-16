@@ -10,7 +10,13 @@
 <body>
   <header><img class="mark" src="icons/icon128.png" alt="" aria-hidden="true"><div><h1>만화 번역</h1><p>일본어 → 한국어 · 내 서버 · <span id="version"></span></p></div></header>
   <main>
-    <section class="tab-panel" aria-labelledby="tab-title">
+    <section id="serverEmpty" hidden>
+      <h2>서버가 필요합니다</h2>
+      <p class="muted">번역은 내 comic-translator 서버에서만 합니다. 서버가 없으면 먼저 설치하세요.</p>
+      <p><a id="installGuide" href="https://github.com/furyheimdall/comic-translator">comic-translator 설치 안내</a></p>
+      <button type="button" id="openOptionsEmpty">설정 열기</button>
+    </section>
+    <section id="tabPanel" class="tab-panel" aria-labelledby="tab-title">
       <div class="row"><h2 id="tab-title">현재 탭</h2><label class="toggle"><span>이 사이트 번역</span><input type="checkbox" id="enabled"></label></div>
       <p id="site" class="muted">탭 확인 중…</p>
       <p id="scopeHint" class="hint">같은 사이트 안에서는 페이지를 넘겨도 계속 번역하고, 다른 사이트로 이동하면 꺼집니다.</p>
@@ -21,7 +27,7 @@
       <button type="button" id="originals" class="secondary" disabled>원본 보기</button>
       <p class="hint">이미지만 번역하려면 이미지에서 오른쪽 클릭 → <b>이 이미지 번역</b>.</p>
     </section>
-    <section aria-labelledby="summary-title">
+    <section id="connection" aria-labelledby="summary-title">
       <h2 id="summary-title">연결</h2>
       <dl class="summary">
         <dt>서버</dt><dd id="summaryServer">설정 안 됨</dd>
