@@ -1,7 +1,7 @@
 (() => {
   if (globalThis.__comicTranslatorLoaded) return;
   globalThis.__comicTranslatorLoaded = true;
-  let enabled = false, manual = false, originals = false, minSize = 300, scanTimer, frameScheduled = false;
+  let enabled = false, manual = false, originals = false, minSize = 300, scanTimer, frameScheduled = false, requestSequence = 0;
   const records = new Map(), assets = new Map(), roots = new Map();
   const intersection = new IntersectionObserver(entries => {
     for (const entry of entries) {
@@ -154,9 +154,10 @@
   }
   async function canvasFallback(record, asset) {
     if (!enabled || originals || record.asset !== asset) return;
+    const blob = asset.blob;
     try {
-      const bitmap = await createImageBitmap(asset.blob);
-      if (!enabled || originals || record.asset !== asset) { bitmap.close(); return; }
+      const bitmap = await createImageBitmap(blob);
+      if (!enabled || originals || record.asset !== asset || asset.blob !== blob) { bitmap.close(); return; }
       const canvas = document.createElement('canvas');
       canvas.width = bitmap.width; canvas.height = bitmap.height;
       canvas.className = 'comic-translator-canvas';
@@ -172,8 +173,9 @@
       resetAttribute(record.image, 'src', record.source.src);
       resetAttribute(record.image, 'srcset', record.source.srcset);
       record.image.dataset.comicTranslatorTranslated = 'canvas';
-      removeBadge(record); positionSoon();
-    } catch (error) { setBadge(record, '실패', `번역 이미지 표시 실패: ${error.message}`); }
+      if (asset.status === 'done') removeBadge(record);
+      positionSoon();
+    } catch (error) { if (asset.blob === blob) setBadge(record, '실패', `번역 이미지 표시 실패: ${error.message}`); }
   }
   function apply(record, asset) {
     if (!enabled || originals || !asset.objectUrl || !record.image.isConnected || record.asset !== asset) return;
@@ -190,16 +192,14 @@
     image.src = asset.objectUrl;
     image.dataset.comicTranslatorTranslated = 'blob';
     paintBackgrounds(record);
-    removeBadge(record);
+    if (asset.status === 'done') removeBadge(record);
   }
   async function consider(record) {
     const image = record.image;
     if (!enabled || !image.complete || !image.naturalWidth || record.swapped || record.canvas) return;
-    // Right-clicked images skip the automatic proximity and size rules; manual mode translates nothing else.
-    if (!record.forced) {
-      if (manual || !record.near) return;
-      if (Math.min(image.naturalWidth, image.naturalHeight) < minSize || image.naturalWidth * image.naturalHeight < 250000) return;
-    }
+    // Context-menu requests use requestWith; scanning never grants single-image priority.
+    if (manual || !record.near) return;
+    if (Math.min(image.naturalWidth, image.naturalHeight) < minSize || image.naturalWidth * image.naturalHeight < 250000) return;
     const url = localUrl(image);
     if (!url || owned(url) || !/^(https?:|data:|blob:)/.test(url)) return;
     const key = await assetKey(url);
@@ -212,14 +212,15 @@
     }
     if (asset.objectUrl) { apply(record, asset); return; }
     setBadge(record, asset.status === 'failed' ? '실패' : asset.status === 'processing' ? '번역 중' : '번역 대기', asset.error);
-    if (asset.requested && !record.retry) return;
+    if (asset.requested) return;
     asset.requested = true;
-    const retry = !!record.retry; record.retry = false;
-    try { await message({type: 'CANDIDATE', url: key, retry}); }
+    try { await message({type: 'CANDIDATE', url: key}); }
     catch (error) { asset.requested = false; setBadge(record, '실패', error.message); }
   }
-  // One-off translation with another model; replaces whatever this image currently shows.
+  // Every context-menu selection bypasses automatic deduplication, including its retry path.
   async function requestWith(record, override) {
+    const requestId = String(++requestSequence);
+    record.requestId = requestId;
     let asset = record.asset;
     if (!asset) {
       const url = localUrl(record.image);
@@ -229,9 +230,13 @@
       if (!asset) { asset = {key, url, images: new Set(), requested: false, dataUrl: null, objectUrl: null, blob: null, status: 'queued'}; assets.set(key, asset); }
       record.asset = asset; asset.images.add(record); capture(record);
     }
+    if (record.requestId !== requestId) return;
+    asset.requestId = requestId;
+    asset.requested = true;
+    asset.status = 'queued'; asset.error = '';
     setBadge(record, '번역 대기');
-    try { await message({type: 'CANDIDATE', url: asset.key, override}); }
-    catch (error) { setBadge(record, '실패', error.message); }
+    try { await message({type: 'CANDIDATE', url: asset.key, override, priority: 'single', retry: true, requestId}); }
+    catch (error) { if (asset.requestId === requestId) setBadge(record, '실패', error.message); }
   }
   function changed(record) {
     if (!enabled) return;
@@ -258,7 +263,7 @@
     const record = {image, asset: null, near: false, swapped: false, canvas: null, badge: null, width: image.style.width, height: image.style.height, opacity: image.style.opacity};
     records.set(image, record);
     record.onLoad = () => {
-      if (record.swapped && !record.canvas) { removeBadge(record); return; }
+      if (record.swapped && !record.canvas) { if (record.asset?.status === 'done') removeBadge(record); return; }
       consider(record); positionSoon();
     };
     record.onError = () => { if (record.swapped && !record.canvas && record.asset?.blob) canvasFallback(record, record.asset); };
@@ -368,12 +373,7 @@
       case 'TRANSLATE_IMAGE': {
         scanNodes(document);
         const targets = [...records.values()].filter(record => localUrl(record.image) === payload.url || record.image.src === payload.url);
-        for (const record of targets) {
-          if (payload.override) { requestWith(record, payload.override); continue; }
-          record.forced = true;
-          if (record.asset?.status === 'failed') { record.asset.status = 'queued'; record.asset.error = ''; record.retry = true; }
-          consider(record);
-        }
+        for (const record of targets) requestWith(record, payload.override);
         return {found: targets.length};
       }
       case 'SET_ORIGINALS':
@@ -381,15 +381,17 @@
         for (const record of records.values()) if (originals) restore(record); else if (record.asset?.objectUrl) apply(record, record.asset);
         positionSoon(); break;
       case 'PAGE_STATUS': {
-        const asset = assets.get(payload.url); if (!asset) break;
+        const asset = assets.get(payload.url);
+        if (!asset || (asset.requestId && payload.requestId !== asset.requestId)) break;
         asset.status = payload.status; asset.error = payload.error;
         for (const record of asset.images) setBadge(record, payload.status === 'failed' ? '실패' : payload.status === 'queued' ? '번역 대기' : '번역 중', payload.error);
         break;
       }
       case 'RESULT': {
-        const asset = assets.get(payload.url); if (!asset || !enabled) break;
+        const asset = assets.get(payload.url);
+        if (!asset || !enabled || (asset.requestId && payload.requestId !== asset.requestId)) break;
         if (payload.replace && asset.objectUrl) {
-          // A one-off model result replaces the shown translation.
+          // Only the currently selected request may replace the shown translation.
           for (const record of asset.images) restore(record);
           URL.revokeObjectURL(asset.objectUrl); asset.objectUrl = null;
         }
