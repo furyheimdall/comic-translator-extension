@@ -1,11 +1,11 @@
 const DEFAULTS = {serverUrl: '', token: '', deviceName: '', notice: '', providerId: '', providerLabel: '', model: '', reasoning: 'default', autoAll: false, autoSites: [], minSize: 300};
 const PAIR_POLL_MS = 2000;
-// Status polls stay at 2s. Network errors and HTTP 5xx back off, then the page is marked failed.
+// Status polls stay at 2s. Network errors, HTTP 5xx, and HTTP 429 back off, then the page is marked failed. Other 4xx stay on the 2s path.
 const POLL_BASE_MS = 2000;
 const POLL_MAX_DELAY_MS = 30000;
 const POLL_MAX_ATTEMPTS = 5;
-// No HTTP status means the connection dropped. A JSON parse failure or a throw from notifyPage has no status either, so it counts as one of the five tries. buildMenus checks error.transient instead. Both paths still stop, and the five-try window stays.
-function transientPollError(error) { return error?.status == null || error.status >= 500; }
+// No HTTP status means the connection dropped. A JSON parse failure or a throw from notifyPage has no status either, so it counts as one of the five tries. HTTP 429 uses that same window. buildMenus checks error.transient instead. Both paths still stop, and the five-try window stays.
+function transientPollError(error) { return error?.status == null || error.status >= 500 || error.status === 429; }
 function pollBackoffMs(attempt) { return Math.min(POLL_BASE_MS * 2 ** (attempt - 1), POLL_MAX_DELAY_MS); }
 let pairing = null; // {serverUrl, id, secret, code, expiresAt, status, error}
 let settings, tabs = {}, sessions = {}, saveChain = Promise.resolve(), retryChain = Promise.resolve();
@@ -297,7 +297,7 @@ async function pump(tabId, priority = false) {
 async function poll(tabId) {
   if (polling.has(tabId) || !tabs[tabId]) return;
   polling.add(tabId);
-  // Consecutive network/5xx failures per server session. A successful poll clears the count.
+  // Consecutive network/5xx/429 failures per server session. A successful poll clears the count.
   const attempts = new Map(), retryAt = new Map();
   try {
     while (tabs[tabId]) {
