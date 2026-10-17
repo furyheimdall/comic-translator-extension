@@ -1,5 +1,12 @@
 const DEFAULTS = {serverUrl: '', token: '', deviceName: '', notice: '', providerId: '', providerLabel: '', model: '', reasoning: 'default', autoAll: false, autoSites: [], minSize: 300};
 const PAIR_POLL_MS = 2000;
+// Status polls stay at 2s. Network errors, HTTP 5xx, and HTTP 429 back off, then the page is marked failed. Other 4xx stay on the 2s path.
+const POLL_BASE_MS = 2000;
+const POLL_MAX_DELAY_MS = 30000;
+const POLL_MAX_ATTEMPTS = 5;
+// No HTTP status means the connection dropped. A JSON parse failure or a throw from notifyPage has no status either, so it counts as one of the five tries. HTTP 429 uses that same window. buildMenus checks error.transient instead. Both paths still stop, and the five-try window stays.
+function transientPollError(error) { return error?.status == null || error.status >= 500 || error.status === 429; }
+function pollBackoffMs(attempt) { return Math.min(POLL_BASE_MS * 2 ** (attempt - 1), POLL_MAX_DELAY_MS); }
 let pairing = null; // {serverUrl, id, secret, code, expiresAt, status, error}
 let settings, tabs = {}, sessions = {}, saveChain = Promise.resolve(), retryChain = Promise.resolve();
 const creations = new Map(), uploadChains = new Map(), running = new Set(), polling = new Set(), outputs = new Map();
@@ -39,7 +46,11 @@ async function api(path, options = {}, config = settings) {
   if (config.token) headers.set('Authorization', `Bearer ${config.token}`);
   let response;
   try { response = await fetch(validateServer(config.serverUrl) + path, {...options, headers, signal: AbortSignal.timeout(120000)}); }
-  catch (cause) { throw new Error('서버에 연결할 수 없습니다. 주소·네트워크·서버 실행 상태를 확인하세요.', {cause}); }
+  catch (cause) {
+    const error = new Error('서버에 연결할 수 없습니다. 주소·네트워크·서버 실행 상태를 확인하세요.', {cause});
+    error.transient = true;
+    throw error;
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     if (response.status === 401 && config.token && config.token === settings.token) {
@@ -64,7 +75,7 @@ async function forgetPairing(notice) {
   await chrome.storage.local.set(settings);
   await Promise.all(Object.keys(tabs).map(id => disable(Number(id))));
   sessions = {}; await save();
-  buildMenus();
+  buildMenus({force: true});
 }
 async function startPairing(serverUrl, name) {
   serverUrl = validateServer(serverUrl);
@@ -88,7 +99,7 @@ function pollPairing() {
         settings = {...settings, serverUrl: pairing.serverUrl, token: result.token, deviceName: result.name, notice: ''};
         await chrome.storage.local.set(settings);
         pairing = {...pairing, secret: '', status: 'approved'};
-        buildMenus();
+        buildMenus({force: true});
       } else if (result.status !== 'pending') {
         pairing = {...pairing, secret: '', status: result.status, error: result.status === 'denied' ? '서버에서 연결 요청을 거절했습니다.' : '연결 요청이 만료되었습니다. 다시 요청하세요.'};
       }
@@ -286,16 +297,24 @@ async function pump(tabId, priority = false) {
 async function poll(tabId) {
   if (polling.has(tabId) || !tabs[tabId]) return;
   polling.add(tabId);
+  // Consecutive network/5xx/429 failures per server session. A successful poll clears the count.
+  const attempts = new Map(), retryAt = new Map();
   try {
     while (tabs[tabId]) {
       const state = tabs[tabId];
       const pending = Object.values(state.pages).filter(p => p.status === 'processing' && p.idx != null);
       if (!pending.length) break;
+      const now = Date.now();
+      let polled = false, nextRetry = Infinity;
       for (const sid of new Set(pending.map(p => p.sid))) {
+        const due = retryAt.get(sid) || 0;
+        if (due > now) { nextRetry = Math.min(nextRetry, due); continue; }
         const pages = pending.filter(p => p.sid === sid);
+        polled = true;
         try {
           const live = await (await api(`/api/live/${encodeURIComponent(sid)}?pages=${pages.map(p => p.idx).join(',')}`, {}, state.config)).json();
           if (tabs[tabId] !== state) break;
+          attempts.delete(sid); retryAt.delete(sid);
           state.message = live.message || live.error || '';
           for (const result of live.pages) {
             const page = pages.find(p => p.idx === result.idx);
@@ -308,8 +327,22 @@ async function poll(tabId) {
           }
         } catch (error) {
           if (tabs[tabId] !== state) break;
-          if (error.status === 404) await recover(sid);
-          else {
+          if (error.status === 404) { attempts.delete(sid); retryAt.delete(sid); await recover(sid); }
+          else if (transientPollError(error)) {
+            const attempt = (attempts.get(sid) || 0) + 1;
+            if (attempt >= POLL_MAX_ATTEMPTS) {
+              attempts.delete(sid); retryAt.delete(sid);
+              const failed = `${errorText(error)} 여러 번 다시 시도한 뒤 실패로 표시했습니다.`;
+              state.message = failed;
+              for (const page of pages) if (state.pages[page.url] === page) { page.status = 'failed'; page.error = failed; await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'failed', error: page.error}); }
+            } else {
+              attempts.set(sid, attempt);
+              const at = Date.now() + pollBackoffMs(attempt);
+              retryAt.set(sid, at); nextRetry = Math.min(nextRetry, at);
+              state.message = `${errorText(error)} (${attempt}/${POLL_MAX_ATTEMPTS}회 재시도)`;
+              for (const page of pages) if (state.pages[page.url] === page) await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'processing', error: state.message});
+            }
+          } else {
             state.message = errorText(error);
             for (const page of pages) if (state.pages[page.url] === page) await notifyPage(tabId, page, {type: 'PAGE_STATUS', status: 'processing', error: state.message});
             if (error.status === 401 || error.status === 409 || error.status === 400) {
@@ -319,7 +352,10 @@ async function poll(tabId) {
         }
       }
       await save(); await badge(tabId);
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (!tabs[tabId] || !Object.values(tabs[tabId].pages).some(p => p.status === 'processing' && p.idx != null)) break;
+      // A sid in backoff is skipped above, so the server is not hit every 2s. Sleep until that retry when nothing else was polled.
+      const wait = !polled && nextRetry < Infinity ? Math.max(250, nextRetry - Date.now()) : POLL_BASE_MS;
+      await new Promise(resolve => setTimeout(resolve, wait));
     }
   } finally { polling.delete(tabId); }
 }
@@ -373,7 +409,7 @@ async function handle(message, sender) {
       next.minSize = Math.max(1, Number(next.minSize) || 300);
       const changed = JSON.stringify(llmKey(next)) !== configKey();
       if (changed) await Promise.all(Object.keys(tabs).map(id => disable(Number(id))));
-      settings = next; await chrome.storage.local.set(settings); buildMenus();
+      settings = next; await chrome.storage.local.set(settings); buildMenus({force: true});
       return {settings: {...settings, token: settings.token ? 'paired' : ''}};
     }
     case 'GET_STATE': return publicState(tabs[tabId]);
@@ -467,46 +503,93 @@ chrome.alarms.onAlarm.addListener(() => { ready.then(() => Object.keys(tabs).for
 // ---------------------------------------------------------------- context menu
 // "이 이미지를 다음 모델로 번역" lists every model the paired server offers. Choosing one
 // translates that image once with it; the saved provider/model/reasoning stay unchanged.
+// The 30s resume alarm wakes this worker, so the list is cached instead of fetched every wake.
+const MENU_CACHE_KEY = 'modelMenuCache';
+const MENU_COOLDOWN_MS = 5 * 60 * 1000;
 let menuChoices = {}, menuChain = Promise.resolve();
-function buildMenus() {
+async function tokenTag(token) {
+  if (!token) return '';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  return [...new Uint8Array(digest)].slice(0, 8).map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+async function menuCacheIdentity() {
+  return {serverUrl: settings.serverUrl || '', tokenTag: await tokenTag(settings.token), reasoning: settings.reasoning || 'default'};
+}
+function sameMenuAccount(cache, id) { return !!cache && cache.serverUrl === id.serverUrl && cache.tokenTag === id.tokenTag; }
+function menuCacheFresh(cache, id) {
+  // An error or an empty model list is not a 5-minute cache. The next wake asks again.
+  return sameMenuAccount(cache, id) && cache.reasoning === id.reasoning && typeof cache.at === 'number' && Date.now() - cache.at < MENU_COOLDOWN_MS && Array.isArray(cache.entries) && cache.entries.length > 0;
+}
+function menuCacheUsable(cache, id) { return sameMenuAccount(cache, id) && Array.isArray(cache.entries) && cache.entries.length > 0; }
+async function readMenuCache() { return (await chrome.storage.local.get(MENU_CACHE_KEY))[MENU_CACHE_KEY] || null; }
+async function writeMenuCache(entries, error) {
+  await chrome.storage.local.set({[MENU_CACHE_KEY]: {...await menuCacheIdentity(), at: Date.now(), entries, error}});
+}
+function entryTitle(entry) {
+  const current = entry.providerId === settings.providerId && entry.model === (settings.model || entry.defaultModel);
+  return `${entry.providerName} · ${entry.model}${current ? ' (현재 설정)' : ''}`;
+}
+async function loadModelEntries() {
+  if (!settings.serverUrl) throw new Error('먼저 설정에서 서버를 연결하세요.');
+  const {providers} = await connect(settings);
+  const entries = [];
+  for (const provider of providers.filter(p => p.connected)) {
+    const options = await (await api(`/api/providers/${encodeURIComponent(provider.id)}/options`)).json();
+    // Keep the reader's reasoning level when this provider supports it, so a switch stays as fast.
+    const reasoning = options.reasoning_levels.some(l => l.value === settings.reasoning) ? settings.reasoning : 'default';
+    for (const model of options.models) entries.push({providerId: provider.id, providerName: provider.name, model, reasoning, defaultModel: options.default_model || ''});
+  }
+  if (!entries.length) throw new Error('서버에 연결된 번역 제공자가 없습니다.');
+  return entries;
+}
+async function renderModelMenus(entries) {
+  await chrome.contextMenus.removeAll();
+  const create = (props) => new Promise(resolve => chrome.contextMenus.create(props, () => { void chrome.runtime.lastError; resolve(); }));
+  const base = {contexts: ['image'], documentUrlPatterns: ['http://*/*', 'https://*/*']};
+  await create({...base, id: 'translate-image', title: '이 이미지 번역'});
+  await create({...base, id: 'translate-with', title: '이 이미지를 다음 모델로 번역'});
+  menuChoices = {};
+  if (typeof entries === 'string') { await create({...base, id: 'model-none', parentId: 'translate-with', title: entries, enabled: false}); return; }
+  for (const [index, entry] of entries.entries()) {
+    menuChoices[`model-${index}`] = entry;
+    await create({...base, id: `model-${index}`, parentId: 'translate-with', title: entryTitle(entry)});
+  }
+}
+function buildMenus({force = false} = {}) {
   menuChain = menuChain.catch(() => {}).then(async () => {
-    let entries;
+    const id = await menuCacheIdentity();
+    const cache = await readMenuCache();
+    if (!force && menuCacheFresh(cache, id)) {
+      await renderModelMenus(cache.entries);
+      return;
+    }
     try {
-      if (!settings.serverUrl) throw new Error('먼저 설정에서 서버를 연결하세요.');
-      const {providers} = await connect(settings);
-      entries = [];
-      for (const provider of providers.filter(p => p.connected)) {
-        const options = await (await api(`/api/providers/${encodeURIComponent(provider.id)}/options`)).json();
-        // Keep the reader's reasoning level when this provider supports it, so a switch stays as fast.
-        const reasoning = options.reasoning_levels.some(l => l.value === settings.reasoning) ? settings.reasoning : 'default';
-        for (const model of options.models) {
-          const current = provider.id === settings.providerId && model === (settings.model || options.default_model);
-          entries.push({providerId: provider.id, model, reasoning, title: `${provider.name} · ${model}${current ? ' (현재 설정)' : ''}`});
-        }
+      const entries = await loadModelEntries();
+      await writeMenuCache(entries, '');
+      await renderModelMenus(entries);
+    } catch (error) {
+      const nowId = await menuCacheIdentity();
+      const accountUnchanged = nowId.serverUrl === id.serverUrl && nowId.tokenTag === id.tokenTag;
+      // Network/5xx only: a logical error (no provider, unpaired) still replaces the menu.
+      if (accountUnchanged && (error.transient || error.status >= 500) && menuCacheUsable(cache, nowId)) {
+        // Leave the stored identity and `at` alone. A failed refresh must not restart the cooldown or adopt a new reasoning key.
+        await renderModelMenus(cache.entries);
+        return;
       }
-      if (!entries.length) throw new Error('서버에 연결된 번역 제공자가 없습니다.');
-    } catch (error) { entries = errorText(error); }
-    await chrome.contextMenus.removeAll();
-    const create = (props) => new Promise(resolve => chrome.contextMenus.create(props, () => { void chrome.runtime.lastError; resolve(); }));
-    const base = {contexts: ['image'], documentUrlPatterns: ['http://*/*', 'https://*/*']};
-    await create({...base, id: 'translate-image', title: '이 이미지 번역'});
-    await create({...base, id: 'translate-with', title: '이 이미지를 다음 모델로 번역'});
-    menuChoices = {};
-    if (typeof entries === 'string') await create({...base, id: 'model-none', parentId: 'translate-with', title: entries, enabled: false});
-    else for (const [index, entry] of entries.entries()) {
-      menuChoices[`model-${index}`] = entry;
-      await create({...base, id: `model-${index}`, parentId: 'translate-with', title: entry.title});
+      const message = errorText(error);
+      await writeMenuCache([], message);
+      await renderModelMenus(message);
     }
   });
   return menuChain;
 }
-ready.then(buildMenus);
-chrome.runtime.onInstalled.addListener(() => { ready.then(buildMenus); });
+ready.then(() => buildMenus());
+chrome.runtime.onInstalled.addListener(() => { ready.then(() => buildMenus({force: true})); });
 function onMenuClick(info, tab) {
   const id = String(info.menuItemId);
   if ((id !== 'translate-image' && !id.startsWith('model-')) || !tab?.id || !info.srcUrl) return Promise.resolve();
   return ready.then(async () => {
-    await menuChain.catch(() => {}); // a restarted worker rebuilds the model list first
+    await menuChain.catch(() => {}); // a restarted worker restores the cached model list first
     const choice = menuChoices[id];
     if (id !== 'translate-image' && !choice) return;
     if (!settings.serverUrl || !settings.providerId) { chrome.runtime.openOptionsPage(); return; }

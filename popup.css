@@ -44,6 +44,9 @@ footer { padding: 12px 6px 0; font-size: 11px; }
 .summary dt { color: var(--muted); }
 .summary dd { margin: 0; overflow-wrap: anywhere; }
 .hint b { color: var(--text); }
+#serverEmpty { grid-column: 1 / -1; }
+#serverEmpty a { color: var(--accent); font-weight: 600; }
+#serverEmpty a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Full-page settings (options.html) */
 body.page { width: auto; max-width: 1040px; margin: 0 auto; font-size: 15px; }
 body.page header { padding: 28px 24px 8px; }
