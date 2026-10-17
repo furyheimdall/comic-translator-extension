@@ -4,6 +4,7 @@ const PAIR_POLL_MS = 2000;
 const POLL_BASE_MS = 2000;
 const POLL_MAX_DELAY_MS = 30000;
 const POLL_MAX_ATTEMPTS = 5;
+// No HTTP status means the connection dropped. A JSON parse failure or a throw from notifyPage has no status either, so it counts as one of the five tries. buildMenus checks error.transient instead. Both paths still stop, and the five-try window stays.
 function transientPollError(error) { return error?.status == null || error.status >= 500; }
 function pollBackoffMs(attempt) { return Math.min(POLL_BASE_MS * 2 ** (attempt - 1), POLL_MAX_DELAY_MS); }
 let pairing = null; // {serverUrl, id, secret, code, expiresAt, status, error}
