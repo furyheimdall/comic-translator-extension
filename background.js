@@ -516,7 +516,8 @@ async function menuCacheIdentity() {
 }
 function sameMenuAccount(cache, id) { return !!cache && cache.serverUrl === id.serverUrl && cache.tokenTag === id.tokenTag; }
 function menuCacheFresh(cache, id) {
-  return sameMenuAccount(cache, id) && cache.reasoning === id.reasoning && typeof cache.at === 'number' && Date.now() - cache.at < MENU_COOLDOWN_MS && Array.isArray(cache.entries);
+  // An error or an empty model list is not a 5-minute cache. The next wake asks again.
+  return sameMenuAccount(cache, id) && cache.reasoning === id.reasoning && typeof cache.at === 'number' && Date.now() - cache.at < MENU_COOLDOWN_MS && Array.isArray(cache.entries) && cache.entries.length > 0;
 }
 function menuCacheUsable(cache, id) { return sameMenuAccount(cache, id) && Array.isArray(cache.entries) && cache.entries.length > 0; }
 async function readMenuCache() { return (await chrome.storage.local.get(MENU_CACHE_KEY))[MENU_CACHE_KEY] || null; }
@@ -558,7 +559,7 @@ function buildMenus({force = false} = {}) {
     const id = await menuCacheIdentity();
     const cache = await readMenuCache();
     if (!force && menuCacheFresh(cache, id)) {
-      await renderModelMenus(cache.entries.length ? cache.entries : (cache.error || '서버에 연결할 수 없습니다.'));
+      await renderModelMenus(cache.entries);
       return;
     }
     try {
@@ -570,7 +571,7 @@ function buildMenus({force = false} = {}) {
       const accountUnchanged = nowId.serverUrl === id.serverUrl && nowId.tokenTag === id.tokenTag;
       // Network/5xx only: a logical error (no provider, unpaired) still replaces the menu.
       if (accountUnchanged && (error.transient || error.status >= 500) && menuCacheUsable(cache, nowId)) {
-        await writeMenuCache(cache.entries, '');
+        // Leave the stored identity and `at` alone. A failed refresh must not restart the cooldown or adopt a new reasoning key.
         await renderModelMenus(cache.entries);
         return;
       }
